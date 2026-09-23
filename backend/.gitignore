@@ -1,0 +1,6 @@
+# private training data — never commit
+data/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

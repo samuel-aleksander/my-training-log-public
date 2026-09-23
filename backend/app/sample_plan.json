@@ -1,0 +1,19 @@
+{
+  "effort_context": "Sample plan. Every run is easy: able to talk in full sentences, roughly 2–3/10 effort. Use your current Z2 as a guide, combined with your breathing and how you feel. The strides do not chase any heart-rate zone.",
+  "review_weeks": [1, 4, 8, 13],
+  "weeks": [
+    {"number": 1, "start": "2026-01-05", "A": 5, "B": 6, "C": 4, "L": 8, "total": 23, "note": "All easy and on familiar terrain."},
+    {"number": 2, "start": "2026-01-12", "A": 5, "B": 6, "C": 4, "L": 9, "total": 24, "note": "All easy."},
+    {"number": 3, "start": "2026-01-19", "A": 6, "B": 7, "C": 4, "L": 10, "total": 27, "note": "A: 4 × 20 s strides."},
+    {"number": 4, "start": "2026-01-26", "A": 5, "B": 5, "C": 4, "L": 8, "total": 22, "note": "Down week, all easy."},
+    {"number": 5, "start": "2026-02-02", "A": 6, "B": 7, "C": 5, "L": 11, "total": 29, "note": "B: some gentle hills."},
+    {"number": 6, "start": "2026-02-09", "A": 6, "B": 8, "C": 5, "L": 12, "total": 31, "note": "A: 4 × 20 s strides."},
+    {"number": 7, "start": "2026-02-16", "A": 7, "B": 8, "C": 5, "L": 13, "total": 33, "note": "B: some gentle hills."},
+    {"number": 8, "start": "2026-02-23", "A": 5, "B": 6, "C": 4, "L": 10, "total": 25, "note": "Down week, all easy."},
+    {"number": 9, "start": "2026-03-02", "A": 7, "B": 8, "C": 6, "L": 14, "total": 35, "note": "A: 4 × 20 s strides."},
+    {"number": 10, "start": "2026-03-09", "A": 7, "B": 9, "C": 6, "L": 15, "total": 37, "note": "B: some gentle hills."},
+    {"number": 11, "start": "2026-03-16", "A": 8, "B": 9, "C": 6, "L": 16, "total": 39, "note": "All easy."},
+    {"number": 12, "start": "2026-03-23", "A": 6, "B": 7, "C": 5, "L": 11, "total": 29, "note": "Down week, all easy."},
+    {"number": 13, "start": "2026-03-30", "A": 7, "B": 8, "C": 5, "L": 12, "total": 32, "note": "Consolidate."}
+  ]
+}
