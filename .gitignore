@@ -1,6 +1,12 @@
 # Activity files — private training data, never commit them wherever they land
 *.fit
 *.FIT
+*.tcx
+*.TCX
+*.gpx
+*.GPX
+*.zip
+*.ZIP
 
 # Personal athlete details (health history, reference outings, watch settings)
 docs/private/
