@@ -129,10 +129,13 @@ together: the database stores the path and hash of each file.
    completed, completed/planned sessions, running time. Each session shows target, actual and
    difference, with an expandable detail (HR, pace and elevation charts, climb and descent,
    heart-rate drift, laps, zones, effort and note). Extra runs are added to the total, always
-   identified as extra.
+   identified as extra. **My notes** holds your own note on the week plus reason tags (illness,
+   niggle, fatigue, sleep, work, travel, weather, life), for when the week did not go as planned.
+   They are stored apart from the plan's week text, which is never edited.
 2. **Block** — all 13 weeks at once: km so far against the plan to date, weekly planned vs. ran
    km, long-run progression, climb per week, time in your HR zones per week, and heart-rate drift
-   per run. Clicking a week in a chart or the table opens it in the Week screen.
+   per run. Your week notes and tags appear in the table and in each weekly chart's tooltip.
+   Clicking a week in a chart or the table opens it in the Week screen.
 3. **Upload** — the import folder's path, a "Check now" button and the latest files it handled;
    one .FIT or a ZIP with a single activity uploaded by hand, with a preview (date, distance,
    duration, HR), the week suggested from the date and the session from distance and day; week
