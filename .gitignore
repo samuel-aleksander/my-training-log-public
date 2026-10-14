@@ -11,6 +11,9 @@
 # Personal athlete details (health history, reference outings, watch settings)
 docs/private/
 
+# Backups of backend/data (README's backup command) contain all of the above
+backup-*.tar.gz
+
 # Logs
 logs
 *.log
