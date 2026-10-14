@@ -7,12 +7,15 @@ Nothing here is served as a public static asset. Override with env vars:
   MARATHON_INBOX_DIR -> folder watched for new .FIT/ZIP files (default data/inbox;
                         ~/Downloads works too: files there are only read, never moved)
   MARATHON_INBOX_POLL_SECONDS -> how often to look in it; 0 turns watching off
+  MARATHON_DOCS_DIR  -> private plan prose and athlete profile the MCP server reads
+                        (default docs/private)
 """
 
 import os
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
+PRIVATE_DOCS_DIR = Path(os.environ.get("MARATHON_DOCS_DIR", APP_DIR.parents[1] / "docs" / "private"))
 PRIVATE_PLAN_PATH = APP_DIR.parents[1] / "docs" / "private" / "plan.json"
 SAMPLE_PLAN_PATH = APP_DIR / "sample_plan.json"
 PLAN_PATH = Path(

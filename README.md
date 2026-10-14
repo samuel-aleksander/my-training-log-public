@@ -190,6 +190,42 @@ together: the database stores the path and hash of each file.
   from their stored original on the next start (only the new fields change; dates, assignments,
   notes and zones are kept).
 
+## Talking to Claude about your training (MCP)
+
+`backend/app/mcp_server.py` is a local MCP server that lets Claude Desktop read the plan and
+your runs, so you can ask it to review the block or talk through a week. It only reads: each
+call opens the database with `PRAGMA query_only`, so it cannot change the plan or your runs.
+
+Tools: `get_plan_overview` (start here), `get_week`, `get_run`, `list_runs`, `get_block_trends`,
+`get_notes`, `get_athlete_profile` and `get_plan_document`. Prompts: **Review my block** and
+**Discuss a week**.
+
+**What leaves your machine** is what the tools return: per-run and per-week summaries, laps,
+zones, RPE, your notes, and `docs/private/athlete-profile.md` and `plan-base-13-semanas.md`.
+Never the recorded samples, the original files or positions. Don't give Claude Desktop file
+access to this folder, or it could read the .FIT files directly.
+
+Setup: install the backend dependencies (`./dev.sh` does it), then add this to
+`~/Library/Application Support/Claude/claude_desktop_config.json`, with your own path, and
+restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "marathon-training-log": {
+      "command": "/path/to/my-training-log/backend/.venv/bin/python",
+      "args": ["-m", "app.mcp_server"],
+      "env": { "PYTHONPATH": "/path/to/my-training-log/backend" }
+    }
+  }
+}
+```
+
+The web app does not need to be running, but the database must exist (start the app once).
+In Claude Desktop, set the read tools to "Always allow" so the conversation flows. The server
+reads the same environment variables as the backend (`MARATHON_DB_PATH`, …), plus
+`MARATHON_DOCS_DIR` for the private docs.
+
 ## Tests
 
 ```bash
@@ -203,7 +239,8 @@ targets; zones with irregular samples, pauses, gaps and missing HR; FIT reading,
 and with two activities, unsafe paths and corrupt files; altitude, watch vs. computed climb and
 noise; heart-rate drift with warm-up, pauses and missing HR; the block overview; re-reading old
 imports; adding the new columns to an existing database; matching runs to sessions on other
-days; and the import folder (ZIPs, rides, out-of-plan dates, duplicates, files never moved).
+days; the import folder (ZIPs, rides, out-of-plan dates, duplicates, files never moved); and
+the MCP server (read-only connection, what each tool returns, nothing private in the output).
 
 Synthetic fixture: `backend/tests/fit_fixture.py` generates valid FIT files. To create a demo
 one: `python tests/fit_fixture.py demo-activity.fit`. It is test data, not real history; import
@@ -216,7 +253,8 @@ it only if you want to explore the app, and delete it afterwards.
   Garmin watch and with a real Garmin export ZIP**; real files carry many more messages and
   some unhandled field may show up.
 - No connection to Garmin/Strava, no automatic sync, no accounts and no deployment.
-- No predictions, no training advice and no medical recommendations.
+- The app itself makes no predictions, training advice or medical recommendations. Claude can
+  discuss your training through the MCP server, but cannot change the plan.
 - One file per planned session; anything else goes in as an extra run.
 - No version history for the plan: only original values plus simple overrides.
 - The whole file is assumed to be a running activity; intervals are not recognised.

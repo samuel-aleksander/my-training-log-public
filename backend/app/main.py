@@ -604,8 +604,11 @@ def put_week_journal(number: int, payload: dict = Body(...)):
 
 @app.get("/api/block")
 def block_overview():
+    return block_payload(get_conn())
+
+
+def block_payload(conn) -> dict:
     """Whole-block view: per-week totals plus one row per run for trend charts."""
-    conn = get_conn()
     today = date.today().isoformat()
     zone_order = [z.name for z in get_zones(conn)]
 
