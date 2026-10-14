@@ -153,6 +153,45 @@ export type Block = {
   };
 };
 
+export type ZoneSummary = {
+  computed_at: string;
+  zones_used: { name: string; min_hr: number; max_hr: number }[];
+  measured_active_s: number;
+  unknown_hr_s: number;
+  paused_s: number;
+  gap_s: number;
+  buckets: { name: string; seconds: number; minutes: number; pct: number | null }[];
+};
+
+/** A run as the Week screen shows it on its card. */
+export type RunSummary = Activity & {
+  pace_min_km: number | null;
+  zones: ZoneSummary | null;
+  hr_drift_pct: number | null;
+};
+
+/** GET /api/weeks/{n}: the week plus per-run and per-day detail. */
+export type WeekDetail = Omit<Week, "sessions" | "extras"> & {
+  sessions: (SessionItem & { activity: RunSummary | null })[];
+  extras: RunSummary[];
+  avg_hr: number | null;
+  avg_pace_min_km: number | null;
+  ascent_m: number | null;
+  zones: {
+    names: string[];
+    seconds: Record<string, number>;
+    measured_s: number;
+    unknown_hr_s: number;
+  } | null;
+  days: {
+    date: string;
+    planned_km: number | null;
+    planned_labels: SessionItem["label"][];
+    ran_km: number | null;
+    runs: number;
+  }[];
+};
+
 export type ActivityDetail = Activity & {
   series: {
     t: number;
@@ -162,15 +201,7 @@ export type ActivityDetail = Activity & {
     alt: number | null;
   }[];
   laps: Record<string, number | string | null>[];
-  zones: {
-    computed_at: string;
-    zones_used: { name: string; min_hr: number; max_hr: number }[];
-    measured_active_s: number;
-    unknown_hr_s: number;
-    paused_s: number;
-    gap_s: number;
-    buckets: { name: string; seconds: number; minutes: number; pct: number | null }[];
-  } | null;
+  zones: ZoneSummary | null;
   hr_drift: HrDrift | null;
 };
 
@@ -214,7 +245,7 @@ const json = (body: unknown, method = "POST"): RequestInit => ({
 export const api = {
   weeks: () => req<Week[]>("/api/weeks"),
   block: () => req<Block>("/api/block"),
-  week: (n: number) => req<Week>(`/api/weeks/${n}`),
+  week: (n: number) => req<WeekDetail>(`/api/weeks/${n}`),
   saveJournal: (n: number, body: { note: string | null; reasons: string[] }) =>
     req<WeekJournal>(`/api/weeks/${n}/journal`, json(body, "PUT")),
   activity: (id: number) => req<ActivityDetail>(`/api/activities/${id}`),

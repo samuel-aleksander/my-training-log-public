@@ -327,3 +327,29 @@ def test_a_missing_folder_is_reported_not_created(tmp_path):
     missing = tmp_path / "nope"
     assert main.scan_inbox(main.get_conn(), missing, settle_s=0) == []
     assert not missing.exists()
+
+
+def test_week_detail_has_days_heart_rate_and_run_summaries():
+    # Week 7 after the folder import: A run on Monday, B's run moved to extras (Wednesday),
+    # a 2.5 km extra on Saturday and the long run on Sunday — all at 130 bpm.
+    w = client.get("/api/weeks/7").json()
+    days = {d["date"][-2:]: d for d in w["days"]}
+    assert len(w["days"]) == 7
+    assert (days["16"]["planned_km"], days["16"]["ran_km"]) == (None, pytest.approx(7.0, abs=0.05))
+    assert (days["17"]["planned_labels"], days["17"]["ran_km"]) == (["A"], None)
+    assert days["18"]["ran_km"] == pytest.approx(8.1, abs=0.05)
+    assert (days["22"]["planned_km"], days["22"]["ran_km"]) == (13, pytest.approx(12.5, abs=0.05))
+
+    assert w["avg_hr"] == 130
+    assert w["avg_pace_min_km"] > 6
+    assert w["zones"]["names"][:3] == ["Z1", "Z2", "Z3"]
+    assert w["zones"]["seconds"]["Z2"] == pytest.approx(w["zones"]["measured_s"], abs=1)
+
+    a = next(s for s in w["sessions"] if s["label"] == "A")["activity"]
+    assert a["pace_min_km"] == pytest.approx(6.8, abs=0.05)
+    assert a["zones"]["buckets"]
+    assert "hr_drift_pct" in a
+    assert all("zones" in e for e in w["extras"])
+
+    # the light payloads stay light
+    assert "days" not in client.get("/api/weeks").json()[6]

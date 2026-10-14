@@ -1,11 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
   CartesianGrid,
   Legend,
   ReferenceLine,
-  ResponsiveContainer,
   Scatter,
   ScatterChart,
   Tooltip,
@@ -15,25 +14,19 @@ import {
 import { api, type Block as BlockData, type BlockRun, type WeekJournal } from "../lib/api";
 import { SESSION_NAMES, formatDate, hms, km, metres, paceMin, parseDate, signedPct } from "../lib/format";
 import { Card, ErrorBox, Stat } from "../components/ui";
+import {
+  AXIS,
+  BRAND,
+  ChartCard,
+  GRID,
+  Keys,
+  MARGIN,
+  PLANNED,
+  TipBox,
+  type TipRow,
+  zoneColors,
+} from "../components/chart";
 
-const BRAND = "var(--color-brand)";
-const PLANNED = "var(--color-planned)";
-const GRID = { strokeOpacity: 0.15, vertical: false };
-const AXIS = { fontSize: 11, tickLine: false, axisLine: false };
-const MARGIN = { top: 16, right: 4, left: 0, bottom: 0 }; // room for the "Now" label
-
-const OUTSIDE = "Outside zones";
-
-/** Ordinal zone ramp: spread the user's zones evenly over the five validated steps. */
-function zoneColors(names: string[]): Record<string, string> {
-  const named = names.filter((n) => n !== OUTSIDE);
-  const out: Record<string, string> = { [OUTSIDE]: "var(--color-zone-outside)" };
-  named.forEach((n, i) => {
-    const step = named.length === 1 ? 3 : Math.min(5, 1 + Math.round((i * 4) / (named.length - 1)));
-    out[n] = `var(--color-zone-${named.length > 5 ? Math.min(i + 1, 5) : step})`;
-  });
-  return out;
-}
 
 export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
   const [data, setData] = useState<BlockData | null>(null);
@@ -196,9 +189,9 @@ export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
             />
             <ReferenceLine y={0} stroke="var(--color-muted)" />
             <Tooltip cursor={false} content={<RunTip />} />
-            <Legend content={<Keys items={[[BRAND, "Long runs"], ["var(--color-zone-outside)", "Other runs"]]} />} />
+            <Legend content={<Keys items={[[BRAND, "Long runs"], ["var(--color-other-runs)", "Other runs"]]} />} />
             <Scatter data={driftRuns.filter((r) => r.label === "L").map(toPoint)} fill={BRAND} shape={<Dot />} />
-            <Scatter data={driftRuns.filter((r) => r.label !== "L").map(toPoint)} fill="var(--color-zone-outside)" shape={<Dot />} />
+            <Scatter data={driftRuns.filter((r) => r.label !== "L").map(toPoint)} fill="var(--color-other-runs)" shape={<Dot />} />
           </ScatterChart>
         )}
       </ChartCard>
@@ -272,58 +265,7 @@ function JournalSummary({ journal }: { journal: WeekJournal }) {
   );
 }
 
-function ChartCard({
-  title,
-  subtitle,
-  empty,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  empty?: string;
-  children: ReactNode;
-}) {
-  return (
-    <Card className="p-3">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <p className="mb-2 text-xs text-muted">{subtitle}</p>
-      <div className="h-60">
-        {empty ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted">{empty}</div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            {children as React.ReactElement}
-          </ResponsiveContainer>
-        )}
-      </div>
-    </Card>
-  );
-}
 
-/** [series color or null, value, label]. */
-type TipRow = [string | null, string, string];
-
-function TipBox({ title, rows, journal }: { title: string; rows: TipRow[]; journal?: WeekJournal }) {
-  const hasJournal = journal && (journal.note || journal.reasons.length > 0);
-  return (
-    <div className="max-w-[260px] rounded-lg border border-line bg-panel px-3 py-2 text-xs shadow-sm">
-      <div className="mb-1 font-medium">{title}</div>
-      {rows.map(([color, value, label], i) => (
-        <div key={i} className="flex items-center gap-2">
-          <span className="inline-block h-0.5 w-3" style={{ background: color ?? "transparent" }} />
-          <span className="font-semibold tabular-nums">{value}</span>
-          <span className="text-muted">{label}</span>
-        </div>
-      ))}
-      {hasJournal && (
-        <div className="mt-1.5 border-t border-line pt-1.5">
-          {journal.reasons.length > 0 && <div className="font-medium text-warn">{journal.reasons.join(" · ")}</div>}
-          {journal.note && <div className="line-clamp-3 text-muted">{journal.note}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function WeekTip<
   R extends {
@@ -367,18 +309,6 @@ function RunTip({ active, payload }: { active?: boolean; payload?: { payload: Bl
   );
 }
 
-function Keys({ items }: { items: [string, string][] }) {
-  return (
-    <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 pt-1 text-xs text-muted">
-      {items.map(([color, label]) => (
-        <span key={label} className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: color }} />
-          {label}
-        </span>
-      ))}
-    </div>
-  );
-}
 
 function Dot(props: { cx?: number; cy?: number; fill?: string }) {
   return <circle cx={props.cx} cy={props.cy} r={5} fill={props.fill} stroke="var(--color-panel)" strokeWidth={2} />;

@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, date
+from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
@@ -230,6 +230,74 @@ def drift_for(conn, activity_id: int) -> dict:
     events = [dict(r) for r in conn.execute(
         "SELECT ts, event, event_type FROM timer_events WHERE activity_id=?", (activity_id,))]
     return hr_drift(samples, events)
+
+
+def run_summary(conn, run: dict) -> dict:
+    """An activity_dict plus what the Week screen shows on each run's card."""
+    km_ = run["distance_km"]
+    return {
+        **run,
+        "pace_min_km": round(run["timer_time_s"] / 60 / km_, 2) if km_ and run["timer_time_s"] else None,
+        "zones": zone_payload(conn, run["id"]),
+        "hr_drift_pct": drift_for(conn, run["id"])["drift_pct"] if run["has_hr"] else None,
+    }
+
+
+def week_detail(conn, week: sqlite3.Row, wp: dict) -> dict:
+    """The single-week view: per-run summaries, day-by-day km and week-level heart rate.
+
+    Kept out of week_payload so the all-weeks list and the Block screen stay light.
+    """
+    for s in wp["sessions"]:
+        if s["activity"]:
+            s["activity"] = run_summary(conn, s["activity"])
+    wp["extras"] = [run_summary(conn, e) for e in wp["extras"]]
+    runs = [s["activity"] for s in wp["sessions"] if s["activity"]] + wp["extras"]
+
+    # Heart rate: average weighted by each run's duration, over runs that have one.
+    with_hr = [r for r in runs if r["avg_hr"] and r["timer_time_s"]]
+    hr_time = sum(r["timer_time_s"] for r in with_hr)
+    km_total = sum(r["distance_km"] or 0 for r in runs)
+    time_total = sum(r["timer_time_s"] or 0 for r in runs)
+    climbs = [r["ascent_m"] for r in runs if r["ascent_m"] is not None]
+
+    zone_names = [z.name for z in get_zones(conn)]
+    zone_secs = {n: 0.0 for n in zone_names}
+    measured = unknown = 0.0
+    for r in runs:
+        if r["zones"]:
+            measured += r["zones"]["measured_active_s"]
+            unknown += r["zones"]["unknown_hr_s"]
+            for b in r["zones"]["buckets"]:
+                zone_secs[b["name"]] = zone_secs.get(b["name"], 0) + b["seconds"]
+
+    start = date.fromisoformat(week["start_date"])
+    days = []
+    for i in range(7):
+        d = (start + timedelta(days=i)).isoformat()
+        planned = [s for s in wp["sessions"] if s["planned_date"] == d]
+        ran = [r for r in runs if datetime.fromisoformat(r["start_time"]).astimezone().date().isoformat() == d]
+        days.append({
+            "date": d,
+            "planned_km": round(sum(s["target_km"] for s in planned), 2) if planned else None,
+            "planned_labels": [s["label"] for s in planned],
+            "ran_km": round(sum(r["distance_km"] or 0 for r in ran), 2) if ran else None,
+            "runs": len(ran),
+        })
+
+    return {
+        **wp,
+        "avg_hr": round(sum(r["avg_hr"] * r["timer_time_s"] for r in with_hr) / hr_time) if hr_time else None,
+        "avg_pace_min_km": round(time_total / 60 / km_total, 2) if km_total and time_total else None,
+        "ascent_m": round(sum(climbs)) if climbs else None,
+        "zones": {
+            "names": zone_names + [n for n in zone_secs if n not in zone_names],
+            "seconds": {n: round(v) for n, v in zone_secs.items()},
+            "measured_s": round(measured),
+            "unknown_hr_s": round(unknown),
+        } if zone_names else None,
+        "days": days,
+    }
 
 
 def free_sessions(conn, week_id: int) -> list[dict]:
@@ -502,7 +570,7 @@ def get_week(number: int):
     w = conn.execute("SELECT * FROM weeks WHERE number=?", (number,)).fetchone()
     if not w:
         raise HTTPException(404, "Week not found")
-    return week_payload(conn, w)
+    return week_detail(conn, w, week_payload(conn, w))
 
 
 @app.put("/api/weeks/{number}/journal")

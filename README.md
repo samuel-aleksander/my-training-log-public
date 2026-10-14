@@ -125,10 +125,14 @@ together: the database stores the path and hash of each file.
 
 ## Screens
 
-1. **Week** — previous/next navigation, planned and actual km, signed difference, percentage
-   completed, completed/planned sessions, running time. Each session shows target, actual and
-   difference, with an expandable detail (HR, pace and elevation charts, climb and descent,
-   heart-rate drift, laps, zones, effort and note). Extra runs are added to the total, always
+1. **Week** — opens on the current week; previous/next navigation. At the top: km ran against
+   the plan (difference and percentage), sessions, running time, average pace, average heart rate
+   (weighted by each run's time) and climb. A **day-by-day** chart puts planned km on the day they
+   were planned and ran km on the day you ran, and the week's **time in heart-rate zones** is shown
+   as one bar with minutes and percentages. Each session shows target, actual and difference and,
+   once run, its time, pace, average and max heart rate, climb, heart-rate drift, effort, a zone
+   bar and your note; the day you ran is shown when it differs from the plan. Details expand to
+   the HR, pace and elevation charts, laps and zones. Extra runs are added to the total, always
    identified as extra. **My notes** holds your own note on the week plus reason tags (illness,
    niggle, fatigue, sleep, work, travel, weather, life), for when the week did not go as planned.
    They are stored apart from the plan's week text, which is never edited.

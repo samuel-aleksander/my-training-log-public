@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { START_COMMAND } from "./lib/api";
+import { START_COMMAND, api } from "./lib/api";
+import { localDay } from "./lib/format";
 import { WeekView } from "./pages/WeekView";
 import { Upload } from "./pages/Upload";
 import { Settings } from "./pages/Settings";
@@ -9,9 +10,22 @@ type Tab = "week" | "block" | "upload" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("week");
-  const [week, setWeek] = useState(1);
+  const [week, setWeek] = useState<number | null>(null);
   const [key, setKey] = useState(0);
   const [offline, setOffline] = useState(false);
+
+  // Open on the week that contains today (the last one once the block is over).
+  useEffect(() => {
+    const today = localDay(new Date().toISOString());
+    api
+      .weeks()
+      .then((ws) => {
+        const current = ws.find((w) => w.start_date <= today && today <= w.end_date);
+        const over = ws.length && today > ws[ws.length - 1].end_date;
+        setWeek((n) => n ?? current?.number ?? (over ? ws[ws.length - 1].number : 1));
+      })
+      .catch(() => setWeek((n) => n ?? 1));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +88,12 @@ export default function App() {
       </nav>
 
       <main>
-        {tab === "week" && <WeekView key={`${week}-${key}`} initialWeek={week} />}
+        {tab === "week" &&
+          (week === null ? (
+            <p className="p-4 text-sm text-muted">Loading…</p>
+          ) : (
+            <WeekView key={`${week}-${key}`} initialWeek={week} />
+          ))}
         {tab === "block" && (
           <Block
             key={key}

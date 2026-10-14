@@ -15,16 +15,18 @@
 
 /* Chart colors. Plain variables rather than @theme: Tailwind drops theme
    variables it never sees spelled out, and the zone names are built at runtime.
-   "Planned" is the de-emphasis gray beside the brand accent; zones are one
-   ordinal blue ramp (validated light→dark, lightest step clears 2:1). */
+   They use the app's own tones: the cool neutral (hue 250) for grays. Zones
+   follow Garmin's order (gray, blue, green, orange, red) in muted, low-chroma
+   shades so they sit calmly beside the brand teal. */
 :root {
-  --color-planned: #c9c8c2;
-  --color-zone-1: #86b6ef;
-  --color-zone-2: #5598e7;
-  --color-zone-3: #256abf;
-  --color-zone-4: #184f95;
-  --color-zone-5: #0d366b;
-  --color-zone-outside: #a3a29b;
+  --color-planned: oklch(0.86 0.01 250);
+  --color-zone-1: oklch(0.8 0.01 250);
+  --color-zone-2: oklch(0.64 0.07 240);
+  --color-zone-3: oklch(0.67 0.07 160);
+  --color-zone-4: oklch(0.73 0.09 65);
+  --color-zone-5: oklch(0.62 0.11 25);
+  --color-zone-outside: oklch(0.92 0.006 250);
+  --color-other-runs: oklch(0.72 0.015 250); /* de-emphasis dots beside the brand accent */
 }
 
 html,
