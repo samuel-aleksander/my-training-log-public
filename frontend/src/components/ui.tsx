@@ -58,6 +58,17 @@ export function Badge({ status }: { status: "completed" | "planned" | "skipped" 
   return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${map[1]}`}>{map[0]}</span>;
 }
 
+export function AutoTag() {
+  return (
+    <span
+      title="Placed automatically from the import folder, by date and distance. Reassign it in Upload if it belongs elsewhere."
+      className="rounded-full border border-line px-2 py-0.5 text-[11px] font-medium text-muted"
+    >
+      auto
+    </span>
+  );
+}
+
 export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <div className="rounded-xl border border-bad/40 bg-bad/10 p-4 text-sm text-bad">

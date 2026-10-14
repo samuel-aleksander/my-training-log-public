@@ -76,10 +76,38 @@ Everything is private and stays outside the frontend's public assets:
 backend/data/marathon.sqlite3     database
 backend/data/original_files/      original .FIT files, named by their sha256 hash
 backend/data/staging/             files awaiting confirmation
+backend/data/inbox/               default import folder (see below)
 ```
 
 Paths are configurable through environment variables: `MARATHON_DATA_DIR`, `MARATHON_DB_PATH`,
 `MARATHON_FILES_DIR`, `MARATHON_STAGING_DIR`.
+
+### Import folder
+
+While the app runs it looks in a folder every 15 seconds and imports any new `.fit`, or Garmin
+ZIP from **Export original**. It is `backend/data/inbox/` unless you point it elsewhere, for
+example at your downloads:
+
+```bash
+MARATHON_INBOX_DIR=~/Downloads ./dev.sh
+```
+
+`MARATHON_INBOX_POLL_SECONDS` changes the interval (`0` turns watching off; "Check now" on the
+Upload screen still works).
+
+- Files in the folder are only read: never moved, renamed or deleted. Each version of a file
+  (path, size, modification time) is handled once; deleting a run in the app does not bring it
+  back from the folder.
+- Each run goes to the week of its date and then to the **free session that best fits its
+  distance and day**, so a Thursday run done on Wednesday still lands on Thursday's session.
+  A run shorter than 60 % of every free session (or in a week with all sessions done) is an
+  extra. These runs carry an "auto" tag until you reassign them, and the Week screen shows the
+  day you actually ran when it differs from the plan.
+- Skipped, with the reason shown on the Upload screen: activities that are not runs (rides,
+  strength…), runs outside the plan's weeks, ZIPs without an activity, and files already
+  imported. Anything skipped can still be uploaded by hand.
+- Files modified in the last 3 seconds are left for the next look, so half-downloaded files are
+  not read.
 
 ### Backup and restore
 
@@ -105,9 +133,11 @@ together: the database stores the path and hash of each file.
 2. **Block** — all 13 weeks at once: km so far against the plan to date, weekly planned vs. ran
    km, long-run progression, climb per week, time in your HR zones per week, and heart-rate drift
    per run. Clicking a week in a chart or the table opens it in the Week screen.
-3. **Upload** — one .FIT or a ZIP with a single activity; preview with date, distance, duration
-   and HR; week suggested from the date; week and session selection, or "Extra / unplanned" with
-   a type; confirmation before saving; later reassignment; deletion with confirmation.
+3. **Upload** — the import folder's path, a "Check now" button and the latest files it handled;
+   one .FIT or a ZIP with a single activity uploaded by hand, with a preview (date, distance,
+   duration, HR), the week suggested from the date and the session from distance and day; week
+   and session selection, or "Extra / unplanned" with a type; confirmation before saving; later
+   reassignment; deletion with confirmation.
 4. **Settings** — km and min/km; the real limits of your HR zones (entered by you, never derived
    from age, max HR or percentages); perceived effort and a note per run.
 
@@ -156,7 +186,7 @@ together: the database stores the path and hash of each file.
 ## Tests
 
 ```bash
-cd backend && source .venv/bin/activate && pytest -q     # 38 tests
+cd backend && source .venv/bin/activate && pytest -q
 ```
 
 They always run against the sample plan, never your private one. They cover: exact seeding of
@@ -165,7 +195,8 @@ duplicate detection; reassignment; persistence after a restart; actual − targe
 targets; zones with irregular samples, pauses, gaps and missing HR; FIT reading, ZIP with one
 and with two activities, unsafe paths and corrupt files; altitude, watch vs. computed climb and
 noise; heart-rate drift with warm-up, pauses and missing HR; the block overview; re-reading old
-imports; and adding the new columns to an existing database.
+imports; adding the new columns to an existing database; matching runs to sessions on other
+days; and the import folder (ZIPs, rides, out-of-plan dates, duplicates, files never moved).
 
 Synthetic fixture: `backend/tests/fit_fixture.py` generates valid FIT files. To create a demo
 one: `python tests/fit_fixture.py demo-activity.fit`. It is test data, not real history; import

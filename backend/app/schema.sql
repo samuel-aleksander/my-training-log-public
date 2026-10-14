@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS activities (
   descent_m           REAL,
   elevation_source    TEXT,                     -- 'device' (watch totals) | 'samples' (computed)
   parser_version      INTEGER NOT NULL DEFAULT 1,
+  auto_assigned       INTEGER NOT NULL DEFAULT 0,  -- 1: placed by the folder import, not by you
   is_demo             INTEGER NOT NULL DEFAULT 0,
   -- assignment
   week_id             INTEGER REFERENCES weeks(id),
@@ -101,6 +102,21 @@ CREATE TABLE IF NOT EXISTS zone_runs (
   unknown_hr_s      REAL NOT NULL,
   paused_s          REAL NOT NULL,
   gap_s             REAL NOT NULL
+);
+
+-- Every file the watched folder has offered, so each is handled once. The files
+-- themselves are never moved or deleted; (path, size, mtime) identifies a version.
+CREATE TABLE IF NOT EXISTS inbox_files (
+  id          INTEGER PRIMARY KEY,
+  path        TEXT NOT NULL,
+  filename    TEXT NOT NULL,
+  size        INTEGER NOT NULL,
+  mtime       INTEGER NOT NULL,
+  status      TEXT NOT NULL,      -- imported | duplicate | skipped | failed
+  message     TEXT,
+  activity_id INTEGER REFERENCES activities(id) ON DELETE SET NULL,
+  seen_at     TEXT NOT NULL,
+  UNIQUE (path, size, mtime)
 );
 
 -- Your own notes on a week (why it went the way it did). Kept apart from

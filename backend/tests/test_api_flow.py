@@ -248,3 +248,82 @@ def test_old_databases_get_the_new_columns(tmp_path):
     assert {"ascent_m", "descent_m", "elevation_source", "parser_version"} <= cols
     assert "altitude_m" in {r["name"] for r in conn.execute("PRAGMA table_info(samples)")}
     assert conn.execute("SELECT parser_version FROM activities").fetchone()[0] == 1
+
+
+# ------------------------------------------------------------------ watched folder
+
+def noon(y, m, d):
+    return datetime(y, m, d, 12, 0, tzinfo=timezone.utc)
+
+
+def test_preview_suggests_a_session_by_distance_and_day():
+    # week 8: Tue A 5, Thu B 6, Sat C 4, Sun L 10 — a 6 km run on Wednesday is B
+    prev = upload(steady_run(noon(2026, 2, 25), 6.0, 6.8), "wed.fit").json()
+    week = client.get("/api/weeks/8").json()
+    b = next(s for s in week["sessions"] if s["label"] == "B")
+    assert prev["suggested_week"] == 8
+    assert prev["suggested_session_id"] == b["id"]
+
+
+def test_folder_import(tmp_path):
+    import zipfile
+
+    conn = main.get_conn()
+    # week 7: Tue 17 A 7 km, Thu 19 B 8 km, Sat 21 C 5 km, Sun 22 L 13 km
+    (tmp_path / "monday.fit").write_bytes(steady_run(noon(2026, 2, 16), 7.0, 6.8))
+    (tmp_path / "wednesday.fit").write_bytes(steady_run(noon(2026, 2, 18), 8.1, 6.8))
+    (tmp_path / "saturday-jog.fit").write_bytes(steady_run(noon(2026, 2, 21), 2.5, 7.5))
+    with zipfile.ZipFile(tmp_path / "123456.zip", "w") as z:
+        z.writestr("123456_ACTIVITY.fit", steady_run(noon(2026, 2, 22), 12.5, 7.0))
+    (tmp_path / "ride.fit").write_bytes(steady_run(noon(2026, 2, 20), 20, 2.5, sport=2))
+    (tmp_path / "old.fit").write_bytes(steady_run(noon(2025, 6, 1), 5, 7))
+    with zipfile.ZipFile(tmp_path / "holiday-photos.zip", "w") as z:
+        z.writestr("photo.jpg", b"not a run")
+    (tmp_path / "notes.txt").write_text("ignored: not .fit or .zip")
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    # files that may still be downloading are left for the next scan
+    assert main.scan_inbox(conn, tmp_path, settle_s=3600) == []
+
+    handled = {h["filename"]: h for h in main.scan_inbox(conn, tmp_path, settle_s=0)}
+    assert set(handled) == {"monday.fit", "wednesday.fit", "saturday-jog.fit", "123456.zip",
+                            "ride.fit", "old.fit", "holiday-photos.zip"}
+    assert handled["ride.fit"]["status"] == "skipped" and "Not a run" in handled["ride.fit"]["message"]
+    assert handled["old.fit"]["status"] == "skipped" and "outside" in handled["old.fit"]["message"]
+    assert handled["holiday-photos.zip"]["status"] == "skipped"
+
+    week = client.get("/api/weeks/7").json()
+    by_label = {s["label"]: s for s in week["sessions"]}
+    assert by_label["A"]["actual_km"] == pytest.approx(7.0, abs=0.05)   # Tuesday's run, done Monday
+    assert by_label["B"]["actual_km"] == pytest.approx(8.1, abs=0.05)   # Thursday's run, done Wednesday
+    assert by_label["C"]["activity"] is None                            # the 2.5 km jog is too short
+    assert by_label["L"]["actual_km"] == pytest.approx(12.5, abs=0.05)  # from the Garmin ZIP
+    assert [e["distance_km"] for e in week["extras"]] == [pytest.approx(2.5, abs=0.05)]
+    assert all(s["activity"]["auto_assigned"] for s in by_label.values() if s["activity"])
+
+    # nothing is moved or deleted, and nothing is handled twice
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert main.scan_inbox(conn, tmp_path, settle_s=0) == []
+
+    # the same activity under another name is recognised
+    (tmp_path / "copy.fit").write_bytes((tmp_path / "monday.fit").read_bytes())
+    [dup] = main.scan_inbox(conn, tmp_path, settle_s=0)
+    assert dup["status"] == "duplicate" and dup["activity_id"] == by_label["A"]["activity"]["id"]
+
+    recent = client.get("/api/inbox").json()["recent"]
+    assert recent[0]["filename"] == "copy.fit"
+    long_entry = next(r for r in recent if r["filename"] == "123456.zip")
+    assert (long_entry["week_number"], long_entry["session_label"], long_entry["auto_assigned"]) == (7, "L", True)
+
+    # moving a run by hand clears the "auto" mark
+    aid = by_label["B"]["activity"]["id"]
+    moved = client.post(f"/api/activities/{aid}/assign", json={"week_number": 7, "is_extra": True}).json()
+    assert moved["auto_assigned"] is False
+    listed = next(a for a in client.get("/api/activities").json() if a["id"] == aid)
+    assert (listed["week_number"], listed["session_label"]) == (7, None)
+
+
+def test_a_missing_folder_is_reported_not_created(tmp_path):
+    missing = tmp_path / "nope"
+    assert main.scan_inbox(main.get_conn(), missing, settle_s=0) == []
+    assert not missing.exists()

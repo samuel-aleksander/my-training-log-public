@@ -73,11 +73,13 @@ def make_fit(
     include_session_timer: bool = True,
     altitudes: list[float | None] | None = None,
     session_elevation: tuple[int, int] | None = None,
+    sport: int = 1,
 ) -> bytes:
     """samples: (offset_seconds, heart_rate|None, cumulative_metres, speed_mps).
 
     altitudes: one value in metres per sample (record field 2, scale 5, offset 500).
     session_elevation: (total_ascent, total_descent) written by the "watch".
+    sport: FIT sport enum (1 running, 2 cycling).
     """
     b = FitBuilder()
     b.define(0, 0, [(0, ENUM), (1, U16), (4, U32)])
@@ -125,7 +127,7 @@ def make_fit(
     values = [
         to_fit_time(start) + last_offset,
         to_fit_time(start),
-        1,  # running
+        sport,
         last_offset * 1000,
         round(total_m * 100),
         round(sum(hrs) / len(hrs)) if hrs else None,

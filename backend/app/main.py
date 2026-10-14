@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import sqlite3
+import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone, date
 from pathlib import Path
 
@@ -12,10 +16,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config, zones as zonelib
 from .db import connect, init_db
 from .fit_parser import PARSER_VERSION, FitError, ParsedActivity, extract_fit_bytes, parse_fit, sha256
+from .matching import suggest_session
 from .metrics import hr_drift
 from .seed import effort_context, seed
 
-app = FastAPI(title="Marathon base-block tracker")
+log = logging.getLogger("marathon")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    get_conn()
+    stop = threading.Event()
+    if config.INBOX_POLL_SECONDS > 0:
+        threading.Thread(target=watch_inbox, args=(stop,), daemon=True).start()
+    yield
+    stop.set()
+
+
+app = FastAPI(title="Marathon base-block tracker", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -75,6 +93,7 @@ def activity_dict(a: sqlite3.Row) -> dict:
         "rpe": a["rpe"],
         "note": a["note"],
         "is_demo": bool(a["is_demo"]),
+        "auto_assigned": bool(a["auto_assigned"]),
         "week_id": a["week_id"],
         "session_id": a["session_id"],
     }
@@ -211,6 +230,181 @@ def drift_for(conn, activity_id: int) -> dict:
     events = [dict(r) for r in conn.execute(
         "SELECT ts, event, event_type FROM timer_events WHERE activity_id=?", (activity_id,))]
     return hr_drift(samples, events)
+
+
+def free_sessions(conn, week_id: int) -> list[dict]:
+    rows = conn.execute(
+        """SELECT s.* FROM sessions s WHERE s.week_id=?
+           AND NOT EXISTS (SELECT 1 FROM activities a WHERE a.session_id = s.id)
+           ORDER BY s.planned_date""",
+        (week_id,),
+    ).fetchall()
+    return [{"id": s["id"], "label": s["label"], "planned_date": s["planned_date"],
+             "target_km": target_km(s)} for s in rows]
+
+
+def store_activity(
+    conn,
+    parsed: ParsedActivity,
+    digest: str,
+    filename: str,
+    stored: Path,
+    week_id: int,
+    session_id: int | None,
+    *,
+    extra_type: str | None = None,
+    rpe=None,
+    note=None,
+    is_demo: bool = False,
+    auto_assigned: bool = False,
+) -> int:
+    """Insert an activity whose original file is already at `stored`. session_id None = extra."""
+    is_extra = session_id is None
+    cur = conn.execute(
+        """INSERT INTO activities
+           (file_hash, original_filename, stored_path, start_time, distance_m, timer_time_s,
+            elapsed_time_s, duration_source, avg_hr, max_hr, has_hr, sport,
+            ascent_m, descent_m, elevation_source, parser_version, auto_assigned, is_demo,
+            week_id, session_id, is_extra, extra_type, rpe, note, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            digest,
+            filename,
+            str(stored),
+            parsed.start_time.isoformat(),
+            parsed.distance_m,
+            parsed.timer_time_s,
+            parsed.elapsed_time_s,
+            parsed.duration_source,
+            parsed.avg_hr,
+            parsed.max_hr,
+            int(parsed.has_hr),
+            parsed.sport,
+            parsed.ascent_m,
+            parsed.descent_m,
+            parsed.elevation_source,
+            PARSER_VERSION,
+            int(auto_assigned),
+            int(is_demo),
+            week_id,
+            session_id,
+            int(is_extra),
+            extra_type if is_extra else None,
+            rpe,
+            note,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    aid = cur.lastrowid
+    insert_samples(conn, aid, parsed)
+    conn.executemany(
+        """INSERT INTO laps (activity_id, idx, start_time, distance_m, timer_time_s,
+                             elapsed_time_s, avg_hr, max_hr) VALUES (?,?,?,?,?,?,?,?)""",
+        [(aid, l["idx"], l["start_time"], l["distance_m"], l["timer_time_s"],
+          l["elapsed_time_s"], l["avg_hr"], l["max_hr"]) for l in parsed.laps],
+    )
+    conn.executemany(
+        "INSERT INTO timer_events (activity_id, ts, event, event_type) VALUES (?,?,?,?)",
+        [(aid, e["ts"], e["event"], e["event_type"]) for e in parsed.events],
+    )
+    conn.commit()
+    recompute_zones(conn, aid)
+    return aid
+
+
+# --------------------------------------------------------------------------- watched folder
+
+RUN_SPORTS = {None, "running"}
+
+
+def scan_inbox(conn, inbox: Path, settle_s: float = config.INBOX_SETTLE_SECONDS) -> list[dict]:
+    """Import every new .fit/.zip in `inbox`. Files are only read, never moved or deleted.
+
+    Runs are handled in the order they were recorded, so sessions fill up the
+    way they happened. Returns one entry per file handled in this scan.
+    """
+    if not inbox.is_dir():
+        return []
+    now = time.time()
+    pending = []
+    for p in sorted(inbox.iterdir()):
+        if p.name.startswith(".") or not p.is_file() or p.suffix.lower() not in (".fit", ".zip"):
+            continue
+        st = p.stat()
+        if now - st.st_mtime < settle_s:
+            continue  # maybe still being written; next scan
+        key = (str(p.resolve()), st.st_size, int(st.st_mtime))
+        if conn.execute(
+            "SELECT 1 FROM inbox_files WHERE path=? AND size=? AND mtime=?", key
+        ).fetchone():
+            continue
+        entry = {"key": key, "filename": p.name, "parsed": None, "fit": None}
+        try:
+            if st.st_size > config.MAX_UPLOAD_BYTES:
+                raise FitError("The file is too large.")
+            _, entry["fit"] = extract_fit_bytes(p.name, p.read_bytes())
+            entry["parsed"] = parse_fit(entry["fit"])
+        except FitError as exc:
+            entry["status"], entry["message"] = "skipped", str(exc)
+        except OSError as exc:
+            entry["status"], entry["message"] = "failed", f"Could not read the file: {exc}"
+        pending.append(entry)
+
+    pending.sort(key=lambda e: e["parsed"].start_time.timestamp() if e["parsed"] else 0)
+    handled = []
+    for e in pending:
+        aid = None
+        if e["parsed"]:
+            e["status"], e["message"], aid = _import_from_inbox(conn, e["filename"], e["fit"], e["parsed"])
+        path, size, mtime = e["key"]
+        conn.execute(
+            """INSERT INTO inbox_files (path, filename, size, mtime, status, message, activity_id, seen_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (path, e["filename"], size, mtime, e["status"], e["message"], aid,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        handled.append({"filename": e["filename"], "status": e["status"], "message": e["message"],
+                        "activity_id": aid})
+    return handled
+
+
+def _import_from_inbox(conn, filename: str, fit: bytes, parsed: ParsedActivity):
+    if parsed.sport not in RUN_SPORTS:
+        return "skipped", f"Not a run ({parsed.sport}). Upload it by hand if it belongs here.", None
+    digest = sha256(fit)
+    existing = conn.execute("SELECT id FROM activities WHERE file_hash=?", (digest,)).fetchone()
+    if existing:
+        return "duplicate", "Already imported.", existing["id"]
+    local_date = parsed.start_time.astimezone().date()
+    week = week_for_date(conn, local_date.isoformat())
+    if not week:
+        return "skipped", "The run's date is outside the plan's weeks.", None
+
+    km_ = parsed.distance_m / 1000 if parsed.distance_m else None
+    session = suggest_session(free_sessions(conn, week["id"]), local_date, km_)
+    stored = config.FILES_DIR / f"{digest}.fit"
+    config.ensure_dirs()
+    stored.write_bytes(fit)
+    aid = store_activity(
+        conn, parsed, digest, filename, stored, week["id"],
+        session["id"] if session else None,
+        extra_type=None if session else "Extra run",
+        auto_assigned=True,
+    )
+    where = f"session {session['label']}" if session else "an extra run"
+    return "imported", f"Week {week['number']}, {where}.", aid
+
+
+def watch_inbox(stop: threading.Event) -> None:
+    conn = connect()
+    while not stop.is_set():
+        try:
+            for h in scan_inbox(conn, config.INBOX_DIR):
+                log.info("inbox: %s %s %s", h["filename"], h["status"], h["message"])
+        except Exception:  # noqa: BLE001 - keep watching after an unexpected error
+            log.exception("inbox scan failed")
+        stop.wait(config.INBOX_POLL_SECONDS)
 
 
 def week_for_date(conn, iso_date: str):
@@ -477,6 +671,10 @@ async def upload_preview(file: UploadFile = File(...)):
     (config.STAGING_DIR / f"{digest}.fit").write_bytes(fit_bytes)
     local_date = parsed.start_time.astimezone().date().isoformat()
     week = week_for_date(conn, local_date)
+    session = None
+    if week:
+        km_ = parsed.distance_m / 1000 if parsed.distance_m else None
+        session = suggest_session(free_sessions(conn, week["id"]), date.fromisoformat(local_date), km_)
     return {
         "duplicate": False,
         "token": digest,
@@ -493,6 +691,7 @@ async def upload_preview(file: UploadFile = File(...)):
         "sample_count": len(parsed.samples),
         "lap_count": len(parsed.laps),
         "suggested_week": week["number"] if week else None,
+        "suggested_session_id": session["id"] if session else None,
     }
 
 
@@ -523,63 +722,27 @@ def confirm_upload(payload: dict = Body(...)):
     parsed = parse_fit(staged.read_bytes())
     stored = config.FILES_DIR / f"{token}.fit"
     shutil.move(str(staged), stored)
-
-    cur = conn.execute(
-        """INSERT INTO activities
-           (file_hash, original_filename, stored_path, start_time, distance_m, timer_time_s,
-            elapsed_time_s, duration_source, avg_hr, max_hr, has_hr, sport,
-            ascent_m, descent_m, elevation_source, parser_version, is_demo,
-            week_id, session_id, is_extra, extra_type, rpe, note, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            token,
-            payload.get("filename") or stored.name,
-            str(stored),
-            parsed.start_time.isoformat(),
-            parsed.distance_m,
-            parsed.timer_time_s,
-            parsed.elapsed_time_s,
-            parsed.duration_source,
-            parsed.avg_hr,
-            parsed.max_hr,
-            int(parsed.has_hr),
-            parsed.sport,
-            parsed.ascent_m,
-            parsed.descent_m,
-            parsed.elevation_source,
-            PARSER_VERSION,
-            int(bool(payload.get("is_demo"))),
-            week["id"],
-            None if is_extra else session_id,
-            int(is_extra),
-            payload.get("extra_type") if is_extra else None,
-            payload.get("rpe"),
-            payload.get("note"),
-            datetime.now(timezone.utc).isoformat(),
-        ),
+    aid = store_activity(
+        conn, parsed, token, payload.get("filename") or stored.name, stored, week["id"],
+        None if is_extra else session_id,
+        extra_type=payload.get("extra_type"),
+        rpe=payload.get("rpe"),
+        note=payload.get("note"),
+        is_demo=bool(payload.get("is_demo")),
     )
-    aid = cur.lastrowid
-    insert_samples(conn, aid, parsed)
-    conn.executemany(
-        """INSERT INTO laps (activity_id, idx, start_time, distance_m, timer_time_s,
-                             elapsed_time_s, avg_hr, max_hr) VALUES (?,?,?,?,?,?,?,?)""",
-        [(aid, l["idx"], l["start_time"], l["distance_m"], l["timer_time_s"],
-          l["elapsed_time_s"], l["avg_hr"], l["max_hr"]) for l in parsed.laps],
-    )
-    conn.executemany(
-        "INSERT INTO timer_events (activity_id, ts, event, event_type) VALUES (?,?,?,?)",
-        [(aid, e["ts"], e["event"], e["event_type"]) for e in parsed.events],
-    )
-    conn.commit()
-    recompute_zones(conn, aid)
     return {"id": aid}
 
 
 @app.get("/api/activities")
 def list_activities():
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM activities ORDER BY start_time DESC").fetchall()
-    return [activity_dict(r) for r in rows]
+    rows = conn.execute(
+        """SELECT a.*, w.number AS week_number, s.label AS session_label FROM activities a
+           LEFT JOIN weeks w ON w.id = a.week_id LEFT JOIN sessions s ON s.id = a.session_id
+           ORDER BY a.start_time DESC"""
+    ).fetchall()
+    return [{**activity_dict(r), "week_number": r["week_number"], "session_label": r["session_label"]}
+            for r in rows]
 
 
 @app.get("/api/activities/{activity_id}")
@@ -639,7 +802,7 @@ def reassign(activity_id: int, payload: dict = Body(...)):
             raise HTTPException(409, "That session already has a run assigned.")
     # start_time is never modified when moving an activity to another week.
     conn.execute(
-        "UPDATE activities SET week_id=?, session_id=?, is_extra=?, extra_type=? WHERE id=?",
+        "UPDATE activities SET week_id=?, session_id=?, is_extra=?, extra_type=?, auto_assigned=0 WHERE id=?",
         (week["id"], None if is_extra else session_id, int(is_extra),
          payload.get("extra_type") if is_extra else None, activity_id),
     )
@@ -679,6 +842,47 @@ def delete_activity(activity_id: int, confirm: bool = False):
     if p.exists():
         p.unlink()
     return {"deleted": activity_id, "plan_untouched": True}
+
+
+@app.get("/api/inbox")
+def inbox_status():
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT f.filename, f.status, f.message, f.seen_at, f.activity_id,
+                  a.start_time, a.distance_m, a.is_extra, a.auto_assigned,
+                  w.number AS week_number, s.label AS session_label
+           FROM inbox_files f
+           LEFT JOIN activities a ON a.id = f.activity_id
+           LEFT JOIN weeks w ON w.id = a.week_id
+           LEFT JOIN sessions s ON s.id = a.session_id
+           ORDER BY f.id DESC LIMIT 20"""
+    ).fetchall()
+    return {
+        "path": str(config.INBOX_DIR),
+        "exists": config.INBOX_DIR.is_dir(),
+        "is_default": config.INBOX_DIR == config.DEFAULT_INBOX_DIR,
+        "poll_seconds": config.INBOX_POLL_SECONDS,
+        "recent": [
+            {
+                "filename": r["filename"],
+                "status": r["status"],
+                "message": r["message"],
+                "seen_at": r["seen_at"],
+                "activity_id": r["activity_id"],
+                "start_time": r["start_time"],
+                "distance_km": round(r["distance_m"] / 1000, 2) if r["distance_m"] else None,
+                "week_number": r["week_number"],
+                "session_label": "extra" if r["is_extra"] else r["session_label"],
+                "auto_assigned": bool(r["auto_assigned"]) if r["activity_id"] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/inbox/scan")
+def inbox_scan():
+    return {"handled": scan_inbox(get_conn(), config.INBOX_DIR)}
 
 
 @app.get("/api/settings")

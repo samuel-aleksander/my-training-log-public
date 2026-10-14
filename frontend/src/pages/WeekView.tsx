@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, type SessionItem, type Week } from "../lib/api";
-import { SESSION_NAMES, formatDate, hms, km, signedKm } from "../lib/format";
+import { SESSION_NAMES, formatDate, hms, km, localDay, signedKm } from "../lib/format";
 import { ActivityDetail } from "../components/ActivityDetail";
 import { WeekNotes } from "../components/WeekNotes";
-import { Badge, Button, Card, ErrorBox, Stat } from "../components/ui";
+import { AutoTag, Badge, Button, Card, ErrorBox, Stat } from "../components/ui";
 
 export function WeekView({ initialWeek }: { initialWeek: number }) {
   const [number, setNumber] = useState(initialWeek);
@@ -89,8 +89,18 @@ export function WeekView({ initialWeek }: { initialWeek: number }) {
                 <div className="flex items-center gap-2">
                   <span className="font-semibold">{SESSION_NAMES[s.label]}</span>
                   <Badge status={s.status} />
+                  {s.activity?.auto_assigned && <AutoTag />}
                 </div>
-                <p className="text-xs text-muted">{formatDate(s.planned_date)}</p>
+                <p className="text-xs text-muted">
+                  {s.activity && localDay(s.activity.start_time) !== s.planned_date ? (
+                    <>
+                      Ran {formatDate(s.activity.start_time)}
+                      <span className="opacity-70"> · planned {formatDate(s.planned_date)}</span>
+                    </>
+                  ) : (
+                    formatDate(s.planned_date)
+                  )}
+                </p>
               </div>
               <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
                 <Mini label="Target" value={km(s.target_km)} hint={
@@ -143,6 +153,7 @@ export function WeekView({ initialWeek }: { initialWeek: number }) {
                   <div className="flex items-center gap-2">
                     <span className="font-semibold">{e.extra_type || "Extra run"}</span>
                     <Badge status="extra" />
+                    {e.auto_assigned && <AutoTag />}
                   </div>
                   <p className="text-xs text-muted">{formatDate(e.start_time)}</p>
                 </div>

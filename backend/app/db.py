@@ -23,6 +23,7 @@ MIGRATIONS = {
         ("descent_m", "REAL"),
         ("elevation_source", "TEXT"),
         ("parser_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("auto_assigned", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "samples": [("altitude_m", "REAL")],
 }

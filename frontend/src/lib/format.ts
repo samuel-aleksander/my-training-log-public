@@ -46,6 +46,12 @@ export function parseDate(iso: string): Date {
   return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso);
 }
 
+/** The local calendar day of an instant, as "2026-09-21". */
+export function localDay(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export const formatDate = (iso: string) =>
   parseDate(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 

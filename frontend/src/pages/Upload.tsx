@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { api, type Week } from "../lib/api";
-import { SESSION_NAMES, durationLabel, formatDateTime, hms, km } from "../lib/format";
-import { Button, Card } from "../components/ui";
+import { useEffect, useRef, useState } from "react";
+import { api, type Inbox, type ListedActivity, type Week } from "../lib/api";
+import { SESSION_NAMES, durationLabel, formatDate, formatDateTime, hms, km } from "../lib/format";
+import { AutoTag, Button, Card } from "../components/ui";
 
 const EXTRA_TYPES = ["Easy run", "Run with strides", "Long run", "Road race", "Other"];
 
@@ -17,6 +17,7 @@ export function Upload({ onImported }: { onImported: (weekNumber: number) => voi
   const [note, setNote] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  const [version, setVersion] = useState(0); // bumped when the folder import adds runs
 
   useEffect(() => {
     api.weeks().then(setWeeks).catch((e: Error) => setError(e.message));
@@ -34,7 +35,7 @@ export function Upload({ onImported }: { onImported: (weekNumber: number) => voi
       setPreview(p);
       if (!p.duplicate) {
         setWeekNumber(p.suggested_week ?? null);
-        setChoice("");
+        setChoice(p.suggested_session_id ? String(p.suggested_session_id) : "");
       }
     } catch (e) {
       setError((e as Error).message);
@@ -69,6 +70,13 @@ export function Upload({ onImported }: { onImported: (weekNumber: number) => voi
 
   return (
     <div className="space-y-4">
+      <ImportFolder
+        onImported={() => {
+          api.weeks().then(setWeeks);
+          setVersion((v) => v + 1);
+        }}
+      />
+
       <Card className="p-4">
         <h2 className="text-lg font-semibold">Upload activity</h2>
         <p className="mt-1 text-sm text-muted">
@@ -162,6 +170,9 @@ export function Upload({ onImported }: { onImported: (weekNumber: number) => voi
                   <option key={s.id} value={s.id} disabled={!!s.activity}>
                     {SESSION_NAMES[s.label]} — {s.target_km} km
                     {s.activity ? " (already assigned)" : ""}
+                    {s.id === preview.suggested_session_id && weekNumber === preview.suggested_week
+                      ? " · suggested by distance and day"
+                      : ""}
                   </option>
                 ))}
                 <option value="extra">Extra / unplanned run</option>
@@ -228,7 +239,7 @@ export function Upload({ onImported }: { onImported: (weekNumber: number) => voi
         </Card>
       )}
 
-      <Reassign weeks={weeks} onChanged={() => api.weeks().then(setWeeks)} />
+      <Reassign key={version} weeks={weeks} onChanged={() => api.weeks().then(setWeeks)} />
     </div>
   );
 }
@@ -244,7 +255,7 @@ function Pair({ label, value, hint }: { label: string; value: string; hint?: str
 }
 
 function Reassign({ weeks, onChanged }: { weeks: Week[]; onChanged: () => void }) {
-  const [list, setList] = useState<any[]>([]);
+  const [list, setList] = useState<ListedActivity[]>([]);
   const [target, setTarget] = useState<Record<number, { week: string; session: string }>>({});
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -266,10 +277,13 @@ function Reassign({ weeks, onChanged }: { weeks: Week[]; onChanged: () => void }
           return (
             <div key={a.id} className="flex flex-wrap items-end gap-2 border-t border-line pt-2 text-sm">
               <div className="min-w-[200px] flex-1">
-                <div className="font-medium">{a.original_filename}</div>
+                <div className="flex items-center gap-2 font-medium">
+                  {a.original_filename}
+                  {a.auto_assigned && <AutoTag />}
+                </div>
                 <div className="text-xs text-muted">
-                  {formatDateTime(a.start_time)} · {km(a.distance_km)} ·{" "}
-                  {a.is_extra ? `extra (${a.extra_type ?? "—"})` : `assigned session`}
+                  {formatDateTime(a.start_time)} · {km(a.distance_km)} · week {a.week_number ?? "—"},{" "}
+                  {a.is_extra ? `extra (${a.extra_type ?? "—"})` : a.session_label ? SESSION_NAMES[a.session_label] : "—"}
                 </div>
               </div>
               <select
@@ -322,6 +336,113 @@ function Reassign({ weeks, onChanged }: { weeks: Week[]; onChanged: () => void }
             </div>
           );
         })}
+      </div>
+    </Card>
+  );
+}
+
+const STATUS_STYLE: Record<string, string> = {
+  imported: "text-good",
+  duplicate: "text-muted",
+  skipped: "text-warn",
+  failed: "text-bad",
+};
+
+function ImportFolder({ onImported }: { onImported: () => void }) {
+  const [inbox, setInbox] = useState<Inbox | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const newest = useRef<string | null | undefined>(undefined);
+  const load = () =>
+    api
+      .inbox()
+      .then((x) => {
+        const top = x.recent[0]?.seen_at ?? null;
+        // A file handled by the background watcher since the last look: refresh the runs below.
+        if (newest.current !== undefined && top !== newest.current) onImported();
+        newest.current = top;
+        setInbox(x);
+      })
+      .catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+    // The server checks the folder on its own; refresh the list while this screen is open.
+    const t = setInterval(load, 10_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!inbox) return error ? <Card className="p-4 text-sm text-bad">{error}</Card> : null;
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold">Import folder</h2>
+          <p className="mt-1 text-sm text-muted">
+            Save Garmin exports (Export original → a .zip, or a .fit) into this folder and they are imported
+            {inbox.poll_seconds > 0 ? ` within ${inbox.poll_seconds} s` : " when you check"}. Each run goes to the
+            free session of its week that best fits its distance and day, so a run done a day early or late still
+            lands on its session. Files are only read, never moved or deleted.
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            setError(null);
+            try {
+              await api.scanInbox();
+              await load();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "Checking…" : "Check now"}
+        </Button>
+      </div>
+
+      <code className="mt-2 block break-all rounded-lg bg-surface px-2 py-1.5 font-mono text-xs">{inbox.path}</code>
+      {!inbox.exists && (
+        <p className="mt-2 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
+          This folder does not exist. Create it, or start the app with MARATHON_INBOX_DIR pointing at another one.
+        </p>
+      )}
+      {inbox.is_default && (
+        <p className="mt-1 text-xs text-muted">
+          To watch your Downloads folder instead, start the app with{" "}
+          <code className="font-mono">MARATHON_INBOX_DIR=~/Downloads ./dev.sh</code>.
+        </p>
+      )}
+      {error && <p className="mt-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{error}</p>}
+
+      <div className="mt-3">
+        <h3 className="text-sm font-semibold">Latest files</h3>
+        {inbox.recent.length === 0 ? (
+          <p className="text-sm text-muted">Nothing imported from the folder yet.</p>
+        ) : (
+          <ul className="mt-1 divide-y divide-line text-sm">
+            {inbox.recent.map((r, i) => (
+              <li key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5">
+                <span className={`w-20 shrink-0 text-xs font-medium capitalize ${STATUS_STYLE[r.status]}`}>
+                  {r.status}
+                </span>
+                <span className="min-w-0 flex-1 break-all">{r.filename}</span>
+                <span className="text-xs text-muted">
+                  {r.start_time && r.status === "imported"
+                    ? `${formatDate(r.start_time)} · ${km(r.distance_km)} → week ${r.week_number}, ${
+                        r.session_label === "extra" ? "extra" : `session ${r.session_label}`
+                      }${r.auto_assigned === false ? " (moved by you)" : ""}`
+                    : r.message}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </Card>
   );

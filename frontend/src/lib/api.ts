@@ -33,6 +33,7 @@ export type Activity = {
   rpe: number | null;
   note: string | null;
   is_demo: boolean;
+  auto_assigned: boolean;
   week_id: number | null;
   session_id: number | null;
 };
@@ -62,6 +63,32 @@ export type WeekJournal = {
   note: string | null;
   reasons: string[];
   updated_at: string | null;
+};
+
+export type ListedActivity = Activity & {
+  week_number: number | null;
+  session_label: "A" | "B" | "C" | "L" | null;
+};
+
+export type InboxEntry = {
+  filename: string;
+  status: "imported" | "duplicate" | "skipped" | "failed";
+  message: string | null;
+  seen_at: string;
+  activity_id: number | null;
+  start_time: string | null;
+  distance_km: number | null;
+  week_number: number | null;
+  session_label: "A" | "B" | "C" | "L" | "extra" | null;
+  auto_assigned: boolean | null;
+};
+
+export type Inbox = {
+  path: string;
+  exists: boolean;
+  is_default: boolean;
+  poll_seconds: number;
+  recent: InboxEntry[];
 };
 
 export type DriftHalf = { seconds: number; avg_hr: number; pace_min_km: number };
@@ -191,7 +218,9 @@ export const api = {
   saveJournal: (n: number, body: { note: string | null; reasons: string[] }) =>
     req<WeekJournal>(`/api/weeks/${n}/journal`, json(body, "PUT")),
   activity: (id: number) => req<ActivityDetail>(`/api/activities/${id}`),
-  activities: () => req<Activity[]>("/api/activities"),
+  activities: () => req<ListedActivity[]>("/api/activities"),
+  inbox: () => req<Inbox>("/api/inbox"),
+  scanInbox: () => req<{ handled: unknown[] }>("/api/inbox/scan", { method: "POST" }),
   updateSession: (id: number, body: { override_km?: number | null; override_duration_min?: number | null }) =>
     req(`/api/sessions/${id}`, json(body, "PATCH")),
   preview: (file: File) => {
