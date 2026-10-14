@@ -7,6 +7,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true, // reachable from your phone on the same Wi-Fi
-    proxy: { "/api": "http://127.0.0.1:8000" },
+    // dev.sh exports BACKEND_PORT when it is changed from the default.
+    proxy: { "/api": `http://127.0.0.1:${process.env.BACKEND_PORT ?? 8000}` },
   },
 });

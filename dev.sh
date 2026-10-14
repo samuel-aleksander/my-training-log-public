@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-BACKEND_PORT="${BACKEND_PORT:-8000}"
+export BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 # ------------------------------------------------------------------ dependencies
