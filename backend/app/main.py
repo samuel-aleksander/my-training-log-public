@@ -151,7 +151,21 @@ def week_payload(conn, week: sqlite3.Row) -> dict:
         "actual_duration_s": round(duration_total),
         "sessions": session_items,
         "extras": [activity_dict(e) for e in extras],
+        "journal": week_journal(conn, week["id"]),
     }
+
+
+MAX_REASONS = 8
+MAX_REASON_CHARS = 40
+MAX_NOTE_CHARS = 4000
+
+
+def week_journal(conn, week_id: int) -> dict:
+    """Your note and reason tags for a week; empty until you write one."""
+    row = conn.execute("SELECT * FROM week_notes WHERE week_id=?", (week_id,)).fetchone()
+    if not row:
+        return {"note": None, "reasons": [], "updated_at": None}
+    return {"note": row["note"], "reasons": json.loads(row["reasons"]), "updated_at": row["updated_at"]}
 
 
 def insert_samples(conn, activity_id: int, parsed: ParsedActivity) -> None:
@@ -297,6 +311,35 @@ def get_week(number: int):
     return week_payload(conn, w)
 
 
+@app.put("/api/weeks/{number}/journal")
+def put_week_journal(number: int, payload: dict = Body(...)):
+    """Replace your note and reason tags for a week. Empty both to clear it."""
+    conn = get_conn()
+    w = conn.execute("SELECT id FROM weeks WHERE number=?", (number,)).fetchone()
+    if not w:
+        raise HTTPException(404, "Week not found")
+    note = (payload.get("note") or "").strip() or None
+    raw = payload.get("reasons") or []
+    if not isinstance(raw, list) or not all(isinstance(r, str) for r in raw):
+        raise HTTPException(400, "Reasons must be a list of short texts.")
+    reasons = list(dict.fromkeys(r.strip() for r in raw if r.strip()))  # dedupe, keep order
+    if len(reasons) > MAX_REASONS or any(len(r) > MAX_REASON_CHARS for r in reasons):
+        raise HTTPException(400, f"Up to {MAX_REASONS} reasons of {MAX_REASON_CHARS} characters each.")
+    if note and len(note) > MAX_NOTE_CHARS:
+        raise HTTPException(400, f"The note is limited to {MAX_NOTE_CHARS} characters.")
+    if note is None and not reasons:
+        conn.execute("DELETE FROM week_notes WHERE week_id=?", (w["id"],))
+    else:
+        conn.execute(
+            """INSERT INTO week_notes (week_id, note, reasons, updated_at) VALUES (?,?,?,?)
+               ON CONFLICT(week_id) DO UPDATE SET
+                 note=excluded.note, reasons=excluded.reasons, updated_at=excluded.updated_at""",
+            (w["id"], note, json.dumps(reasons), datetime.now(timezone.utc).isoformat()),
+        )
+    conn.commit()
+    return week_journal(conn, w["id"])
+
+
 @app.get("/api/block")
 def block_overview():
     """Whole-block view: per-week totals plus one row per run for trend charts."""
@@ -335,6 +378,7 @@ def block_overview():
             "start_date": wp["start_date"],
             "end_date": wp["end_date"],
             "notes": wp["notes"],
+            "journal": wp["journal"],
             "started": wp["start_date"] <= today,
             "current": wp["start_date"] <= today <= wp["end_date"],
             "planned_km": wp["planned_km"],

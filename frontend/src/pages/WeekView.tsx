@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type SessionItem, type Week } from "../lib/api";
 import { SESSION_NAMES, formatDate, hms, km, signedKm } from "../lib/format";
 import { ActivityDetail } from "../components/ActivityDetail";
+import { WeekNotes } from "../components/WeekNotes";
 import { Badge, Button, Card, ErrorBox, Stat } from "../components/ui";
 
 export function WeekView({ initialWeek }: { initialWeek: number }) {
@@ -64,6 +65,13 @@ export function WeekView({ initialWeek }: { initialWeek: number }) {
         />
         <Stat label="Running time" value={hms(week.actual_duration_s)} />
       </div>
+
+      <WeekNotes
+        key={week.number}
+        weekNumber={week.number}
+        journal={week.journal}
+        onSaved={(journal) => setWeek({ ...week, journal })}
+      />
 
       {week.notes && (
         <Card className="p-3 text-sm">

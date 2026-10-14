@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { api, type Block as BlockData, type BlockRun } from "../lib/api";
+import { api, type Block as BlockData, type BlockRun, type WeekJournal } from "../lib/api";
 import { SESSION_NAMES, formatDate, hms, km, metres, paceMin, parseDate, signedPct } from "../lib/format";
 import { Card, ErrorBox, Stat } from "../components/ui";
 
@@ -215,6 +215,7 @@ export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
               <th className="text-right">Climb</th>
               <th className="text-right">Time</th>
               <th className="px-3 text-right">Sessions</th>
+              <th className="pr-3">My notes</th>
             </tr>
           </thead>
           <tbody className="tabular-nums">
@@ -242,6 +243,9 @@ export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
                 <td className="px-3 text-right">
                   {w.sessions_completed} / {w.sessions_planned}
                 </td>
+                <td className="pr-3 font-normal">
+                  <JournalSummary journal={w.journal} />
+                </td>
               </tr>
             ))}
           </tbody>
@@ -252,6 +256,21 @@ export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
 }
 
 // ---------------------------------------------------------------------- pieces
+
+/** Reason tags plus the start of the note; the full note is in the tooltip and the Week screen. */
+function JournalSummary({ journal }: { journal: WeekJournal }) {
+  if (!journal.note && journal.reasons.length === 0) return <span className="text-muted">—</span>;
+  return (
+    <div className="flex min-w-[160px] max-w-[280px] flex-wrap items-center gap-1" title={journal.note ?? undefined}>
+      {journal.reasons.map((r) => (
+        <span key={r} className="rounded-full bg-warn/15 px-1.5 py-0.5 text-[10px] font-medium text-warn">
+          {r}
+        </span>
+      ))}
+      {journal.note && <span className="truncate text-xs text-muted">{journal.note}</span>}
+    </div>
+  );
+}
 
 function ChartCard({
   title,
@@ -284,9 +303,10 @@ function ChartCard({
 /** [series color or null, value, label]. */
 type TipRow = [string | null, string, string];
 
-function TipBox({ title, rows }: { title: string; rows: TipRow[] }) {
+function TipBox({ title, rows, journal }: { title: string; rows: TipRow[]; journal?: WeekJournal }) {
+  const hasJournal = journal && (journal.note || journal.reasons.length > 0);
   return (
-    <div className="rounded-lg border border-line bg-panel px-3 py-2 text-xs shadow-sm">
+    <div className="max-w-[260px] rounded-lg border border-line bg-panel px-3 py-2 text-xs shadow-sm">
       <div className="mb-1 font-medium">{title}</div>
       {rows.map(([color, value, label], i) => (
         <div key={i} className="flex items-center gap-2">
@@ -295,11 +315,21 @@ function TipBox({ title, rows }: { title: string; rows: TipRow[] }) {
           <span className="text-muted">{label}</span>
         </div>
       ))}
+      {hasJournal && (
+        <div className="mt-1.5 border-t border-line pt-1.5">
+          {journal.reasons.length > 0 && <div className="font-medium text-warn">{journal.reasons.join(" · ")}</div>}
+          {journal.note && <div className="line-clamp-3 text-muted">{journal.note}</div>}
+        </div>
+      )}
     </div>
   );
 }
 
-function WeekTip<R extends { w: { number: number; start_date: string; end_date: string; notes: string | null } }>({
+function WeekTip<
+  R extends {
+    w: { number: number; start_date: string; end_date: string; notes: string | null; journal?: WeekJournal };
+  },
+>({
   active,
   payload,
   render,
@@ -314,6 +344,7 @@ function WeekTip<R extends { w: { number: number; start_date: string; end_date: 
     <TipBox
       title={`Week ${r.w.number} · ${formatDate(r.w.start_date)} – ${formatDate(r.w.end_date)}`}
       rows={render(r)}
+      journal={r.w.journal}
     />
   );
 }

@@ -54,6 +54,14 @@ export type Week = {
   actual_duration_s: number;
   sessions: SessionItem[];
   extras: Activity[];
+  journal: WeekJournal;
+};
+
+/** Your own note on a week; `notes` above is the plan's text. */
+export type WeekJournal = {
+  note: string | null;
+  reasons: string[];
+  updated_at: string | null;
 };
 
 export type DriftHalf = { seconds: number; avg_hr: number; pace_min_km: number };
@@ -72,6 +80,7 @@ export type BlockWeek = {
   start_date: string;
   end_date: string;
   notes: string | null;
+  journal: WeekJournal;
   started: boolean;
   current: boolean;
   planned_km: number;
@@ -179,6 +188,8 @@ export const api = {
   weeks: () => req<Week[]>("/api/weeks"),
   block: () => req<Block>("/api/block"),
   week: (n: number) => req<Week>(`/api/weeks/${n}`),
+  saveJournal: (n: number, body: { note: string | null; reasons: string[] }) =>
+    req<WeekJournal>(`/api/weeks/${n}/journal`, json(body, "PUT")),
   activity: (id: number) => req<ActivityDetail>(`/api/activities/${id}`),
   activities: () => req<Activity[]>("/api/activities"),
   updateSession: (id: number, body: { override_km?: number | null; override_duration_min?: number | null }) =>

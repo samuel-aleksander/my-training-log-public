@@ -103,6 +103,15 @@ CREATE TABLE IF NOT EXISTS zone_runs (
   gap_s             REAL NOT NULL
 );
 
+-- Your own notes on a week (why it went the way it did). Kept apart from
+-- weeks.notes, which is the plan's text and never edited.
+CREATE TABLE IF NOT EXISTS week_notes (
+  week_id     INTEGER PRIMARY KEY REFERENCES weeks(id),
+  note        TEXT,
+  reasons     TEXT NOT NULL DEFAULT '[]',   -- JSON list of short tags, e.g. ["Illness"]
+  updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
