@@ -3,8 +3,9 @@ import { START_COMMAND } from "./lib/api";
 import { WeekView } from "./pages/WeekView";
 import { Upload } from "./pages/Upload";
 import { Settings } from "./pages/Settings";
+import { Block } from "./pages/Block";
 
-type Tab = "week" | "upload" | "settings";
+type Tab = "week" | "block" | "upload" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("week");
@@ -29,6 +30,7 @@ export default function App() {
 
   const tabs: [Tab, string][] = [
     ["week", "Week"],
+    ["block", "Block"],
     ["upload", "Upload"],
     ["settings", "Settings"],
   ];
@@ -73,6 +75,15 @@ export default function App() {
 
       <main>
         {tab === "week" && <WeekView key={`${week}-${key}`} initialWeek={week} />}
+        {tab === "block" && (
+          <Block
+            key={key}
+            onOpenWeek={(n) => {
+              setWeek(n);
+              setTab("week");
+            }}
+          />
+        )}
         {tab === "upload" && (
           <Upload
             key={key}

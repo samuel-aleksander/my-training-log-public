@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  Area,
+  AreaChart,
   CartesianGrid,
   Line,
   LineChart,
@@ -8,8 +10,18 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { api, type ActivityDetail as Detail } from "../lib/api";
-import { durationLabel, formatDateTime, hms, km, pace } from "../lib/format";
+import { api, type ActivityDetail as Detail, type HrDrift } from "../lib/api";
+import {
+  durationLabel,
+  elevationLabel,
+  formatDateTime,
+  hms,
+  km,
+  metres,
+  pace,
+  paceMin,
+  signedPct,
+} from "../lib/format";
 import { Button } from "./ui";
 
 function downsample<T>(rows: T[], max = 400): T[] {
@@ -45,14 +57,20 @@ export function ActivityDetail({
 
   const series = downsample(d.series);
   const hasHr = d.has_hr;
+  const hasAlt = d.series.some((p) => p.alt !== null);
 
   return (
     <div className="space-y-4 border-t border-line bg-surface/60 p-4">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <Field label="Distance" value={km(d.distance_km)} />
         <Field label="Duration" value={hms(d.timer_time_s)} hint={durationLabel[d.duration_source]} />
         <Field label="Elapsed time" value={hms(d.elapsed_time_s)} />
         <Field label="Average pace" value={pace(d.distance_km, d.timer_time_s)} />
+        <Field
+          label="Climb / descent"
+          value={d.ascent_m === null ? "No altitude data" : `↑ ${metres(d.ascent_m)} · ↓ ${metres(d.descent_m)}`}
+          hint={d.elevation_source ? elevationLabel[d.elevation_source] : undefined}
+        />
       </div>
 
       {hasHr ? (
@@ -81,6 +99,25 @@ export function ActivityDetail({
           This activity has no heart-rate data. The effort is unknown, not low.
         </p>
       )}
+
+      {hasAlt && (
+        <Chart title="Elevation (m)">
+          <AreaChart data={series}>
+            <CartesianGrid strokeOpacity={0.15} />
+            <XAxis dataKey="t" tickFormatter={(v) => hms(v)} fontSize={11} />
+            <YAxis
+              domain={[(min: number) => Math.floor((min - 5) / 10) * 10, (max: number) => Math.ceil((max + 5) / 10) * 10]}
+              fontSize={11}
+              width={34}
+              allowDecimals={false}
+            />
+            <Tooltip labelFormatter={(v) => hms(Number(v))} formatter={(v) => [`${Math.round(Number(v))} m`, "Altitude"]} />
+            <Area type="monotone" dataKey="alt" stroke="var(--color-muted)" strokeWidth={2} fill="var(--color-planned)" fillOpacity={0.5} connectNulls={false} />
+          </AreaChart>
+        </Chart>
+      )}
+
+      {d.hr_drift && <DriftCard drift={d.hr_drift} climb={d.ascent_m} />}
 
       <section>
         <h4 className="mb-1 text-sm font-semibold">Time in zone</h4>
@@ -205,6 +242,41 @@ export function ActivityDetail({
         )}
       </div>
     </div>
+  );
+}
+
+function DriftCard({ drift, climb }: { drift: HrDrift; climb: number | null }) {
+  return (
+    <section>
+      <h4 className="mb-1 text-sm font-semibold">Heart-rate drift</h4>
+      {drift.drift_pct === null ? (
+        <p className="text-sm text-muted">{drift.reason}</p>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+            <div className="text-2xl font-semibold tabular-nums">{signedPct(drift.drift_pct)}</div>
+            {[drift.first!, drift.second!].map((h, i) => (
+              <div key={i} className="text-sm">
+                <div className="text-[11px] uppercase tracking-wide text-muted">
+                  {i === 0 ? "First half" : "Second half"}
+                </div>
+                <span className="font-semibold tabular-nums">{h.avg_hr} bpm</span>
+                <span className="text-muted"> at </span>
+                <span className="font-semibold tabular-nums">{paceMin(h.pace_min_km)} min/km</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-muted">
+            How much the heart rate rose relative to pace between the two halves of the run. 0 % means the
+            same pace cost the same heart rate throughout; a positive value means the second half cost
+            more. Measured over {hms(drift.analysed_s)} of moving time with heart rate, leaving out the first{" "}
+            {drift.warmup_excluded_s / 60} minutes (warm-up), pauses and stops.
+            {climb !== null && climb > 0 &&
+              " Hills, heat and wind also change it: a climb in one half shows up here as drift."}
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
 

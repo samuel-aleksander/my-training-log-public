@@ -15,6 +15,24 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves
+# existing databases untouched, so they are added here instead.
+MIGRATIONS = {
+    "activities": [
+        ("ascent_m", "REAL"),
+        ("descent_m", "REAL"),
+        ("elevation_source", "TEXT"),
+        ("parser_version", "INTEGER NOT NULL DEFAULT 1"),
+    ],
+    "samples": [("altitude_m", "REAL")],
+}
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
+    for table, columns in MIGRATIONS.items():
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
     conn.commit()

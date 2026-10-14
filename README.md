@@ -99,12 +99,16 @@ together: the database stores the path and hash of each file.
 
 1. **Week** — previous/next navigation, planned and actual km, signed difference, percentage
    completed, completed/planned sessions, running time. Each session shows target, actual and
-   difference, with an expandable detail (HR and pace charts, laps, zones, effort and note).
-   Extra runs are added to the total, always identified as extra.
-2. **Upload** — one .FIT or a ZIP with a single activity; preview with date, distance, duration
+   difference, with an expandable detail (HR, pace and elevation charts, climb and descent,
+   heart-rate drift, laps, zones, effort and note). Extra runs are added to the total, always
+   identified as extra.
+2. **Block** — all 13 weeks at once: km so far against the plan to date, weekly planned vs. ran
+   km, long-run progression, climb per week, time in your HR zones per week, and heart-rate drift
+   per run. Clicking a week in a chart or the table opens it in the Week screen.
+3. **Upload** — one .FIT or a ZIP with a single activity; preview with date, distance, duration
    and HR; week suggested from the date; week and session selection, or "Extra / unplanned" with
    a type; confirmation before saving; later reassignment; deletion with confirmation.
-3. **Settings** — km and min/km; the real limits of your HR zones (entered by you, never derived
+4. **Settings** — km and min/km; the real limits of your HR zones (entered by you, never derived
    from age, max HR or percentages); perceived effort and a note per run.
 
 ## Comparison rules implemented
@@ -123,6 +127,12 @@ together: the database stores the path and hash of each file.
 - States: completed, planned (future date) and not recorded (past date with no run). Future
   sessions are never presented as failures. More distance or intensity is not rewarded.
 - Weekly totals follow the assigned week, not the file's date.
+- Climb and descent come from the watch's own session totals when the file has them; otherwise
+  they are computed from the altitude samples, ignoring changes under 3 m (sensor noise). No
+  altitude in the file = unknown, never flat.
+- Heart-rate drift compares speed ÷ heart rate between the two halves of the moving time,
+  leaving out the first 10 minutes, pauses, stops and gaps. It needs at least 30 minutes and is
+  shown as a description, with no threshold. Hills, heat and wind also move it.
 
 ## File processing
 
@@ -131,7 +141,7 @@ together: the database stores the path and hash of each file.
 - ZIP: at most 50 entries and 80 MB uncompressed; absolute paths or paths with `..` are
   rejected; exactly one activity is required.
 - The original file is stored as is, with its sha256 hash, which also prevents duplicates.
-- In SQLite: summary, timestamped samples, laps, timer events, assignments, notes, zones and
+- In SQLite: summary, timestamped samples (HR, distance, speed, altitude), laps, timer events, assignments, notes, zones and
   plan targets. What was recorded is stored separately from what was calculated.
 - Main duration = the file's **timer time**. Elapsed time is shown separately. If the file has
   no timer, the fallback calculation is labelled explicitly.
@@ -139,18 +149,23 @@ together: the database stores the path and hash of each file.
   events) and without extending readings across gaps longer than 30 s.
 - The exact zones used and the calculation date are recorded; recalculation is explicit when you
   save new zones.
+- When the app learns to read something new from FIT files, runs imported earlier are re-read
+  from their stored original on the next start (only the new fields change; dates, assignments,
+  notes and zones are kept).
 
 ## Tests
 
 ```bash
-cd backend && source .venv/bin/activate && pytest -q     # 23 tests
+cd backend && source .venv/bin/activate && pytest -q     # 38 tests
 ```
 
 They always run against the sample plan, never your private one. They cover: exact seeding of
 the plan and weekly totals; seeding idempotency preserving edits;
 duplicate detection; reassignment; persistence after a restart; actual − target and missing
 targets; zones with irregular samples, pauses, gaps and missing HR; FIT reading, ZIP with one
-and with two activities, unsafe paths and corrupt files.
+and with two activities, unsafe paths and corrupt files; altitude, watch vs. computed climb and
+noise; heart-rate drift with warm-up, pauses and missing HR; the block overview; re-reading old
+imports; and adding the new columns to an existing database.
 
 Synthetic fixture: `backend/tests/fit_fixture.py` generates valid FIT files. To create a demo
 one: `python tests/fit_fixture.py demo-activity.fit`. It is test data, not real history; import
@@ -167,4 +182,5 @@ it only if you want to explore the app, and delete it afterwards.
 - One file per planned session; anything else goes in as an extra run.
 - No version history for the plan: only original values plus simple overrides.
 - The whole file is assumed to be a running activity; intervals are not recognised.
-- Position, cadence and running dynamics data are neither stored nor analysed.
+- Position, cadence and running dynamics data are neither stored nor analysed (altitude is).
+- Drift and climb are not adjusted for each other: a hilly second half shows up as drift.

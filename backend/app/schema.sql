@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS activities (
   max_hr              INTEGER,
   has_hr              INTEGER NOT NULL DEFAULT 0,
   sport               TEXT,
+  ascent_m            REAL,                     -- NULL: no altitude in the file
+  descent_m           REAL,
+  elevation_source    TEXT,                     -- 'device' (watch totals) | 'samples' (computed)
+  parser_version      INTEGER NOT NULL DEFAULT 1,
   is_demo             INTEGER NOT NULL DEFAULT 0,
   -- assignment
   week_id             INTEGER REFERENCES weeks(id),
@@ -56,7 +60,8 @@ CREATE TABLE IF NOT EXISTS samples (
   ts          INTEGER NOT NULL,     -- epoch seconds, as recorded
   hr          INTEGER,              -- NULL = unknown, never 0
   distance_m  REAL,
-  speed_mps   REAL
+  speed_mps   REAL,
+  altitude_m  REAL                  -- NULL = not recorded
 );
 CREATE INDEX IF NOT EXISTS idx_samples_activity ON samples(activity_id, ts);
 

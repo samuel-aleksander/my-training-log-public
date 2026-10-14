@@ -13,6 +13,20 @@
   --color-bad: oklch(0.58 0.17 25);
 }
 
+/* Chart colors. Plain variables rather than @theme: Tailwind drops theme
+   variables it never sees spelled out, and the zone names are built at runtime.
+   "Planned" is the de-emphasis gray beside the brand accent; zones are one
+   ordinal blue ramp (validated light→dark, lightest step clears 2:1). */
+:root {
+  --color-planned: #c9c8c2;
+  --color-zone-1: #86b6ef;
+  --color-zone-2: #5598e7;
+  --color-zone-3: #256abf;
+  --color-zone-4: #184f95;
+  --color-zone-5: #0d366b;
+  --color-zone-outside: #a3a29b;
+}
+
 html,
 body,
 #root {

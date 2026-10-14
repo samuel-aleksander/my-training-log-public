@@ -71,8 +71,14 @@ def make_fit(
     pauses: list[tuple[int, int]] | None = None,
     laps: int = 1,
     include_session_timer: bool = True,
+    altitudes: list[float | None] | None = None,
+    session_elevation: tuple[int, int] | None = None,
 ) -> bytes:
-    """samples: (offset_seconds, heart_rate|None, cumulative_metres, speed_mps)."""
+    """samples: (offset_seconds, heart_rate|None, cumulative_metres, speed_mps).
+
+    altitudes: one value in metres per sample (record field 2, scale 5, offset 500).
+    session_elevation: (total_ascent, total_descent) written by the "watch".
+    """
     b = FitBuilder()
     b.define(0, 0, [(0, ENUM), (1, U16), (4, U32)])
     b.data(0, [4, 255, to_fit_time(start)])
@@ -83,9 +89,16 @@ def make_fit(
         b.data(1, [to_fit_time(start) + p_start, 0, 4])  # stop_all
         b.data(1, [to_fit_time(start) + p_end, 0, 0])  # start
 
-    b.define(2, 20, [(253, U32), (3, U8), (5, U32), (6, U16)])
-    for offset, hr, metres, speed in samples:
-        b.data(2, [to_fit_time(start) + offset, hr, round(metres * 100), round(speed * 1000)])
+    record_fields = [(253, U32), (3, U8), (5, U32), (6, U16)]
+    if altitudes is not None:
+        record_fields.append((2, U16))
+    b.define(2, 20, record_fields)
+    for i, (offset, hr, metres, speed) in enumerate(samples):
+        values = [to_fit_time(start) + offset, hr, round(metres * 100), round(speed * 1000)]
+        if altitudes is not None:
+            alt = altitudes[i]
+            values.append(None if alt is None else round((alt + 500) * 5))
+        b.data(2, values)
 
     last_offset = samples[-1][0]
     total_m = samples[-1][2]
@@ -121,6 +134,9 @@ def make_fit(
     if include_session_timer:
         fields.insert(4, (8, U32))
         values.insert(4, timer * 1000)
+    if session_elevation is not None:
+        fields += [(22, U16), (23, U16)]
+        values += list(session_elevation)
     b.define(4, 18, fields)
     b.data(4, values)
     return b.build()

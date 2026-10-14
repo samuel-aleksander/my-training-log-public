@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, zones as zonelib
 from .db import connect, init_db
-from .fit_parser import FitError, extract_fit_bytes, parse_fit, sha256
+from .fit_parser import PARSER_VERSION, FitError, ParsedActivity, extract_fit_bytes, parse_fit, sha256
+from .metrics import hr_drift
 from .seed import effort_context, seed
 
 app = FastAPI(title="Marathon base-block tracker")
@@ -32,6 +33,7 @@ def get_conn() -> sqlite3.Connection:
         _conn = connect()
         init_db(_conn)
         seed(_conn)
+        reparse_outdated(_conn)
     return _conn
 
 
@@ -65,6 +67,9 @@ def activity_dict(a: sqlite3.Row) -> dict:
         "avg_hr": a["avg_hr"],
         "max_hr": a["max_hr"],
         "has_hr": bool(a["has_hr"]),
+        "ascent_m": round(a["ascent_m"]) if a["ascent_m"] is not None else None,
+        "descent_m": round(a["descent_m"]) if a["descent_m"] is not None else None,
+        "elevation_source": a["elevation_source"],
         "is_extra": bool(a["is_extra"]),
         "extra_type": a["extra_type"],
         "rpe": a["rpe"],
@@ -147,6 +152,51 @@ def week_payload(conn, week: sqlite3.Row) -> dict:
         "sessions": session_items,
         "extras": [activity_dict(e) for e in extras],
     }
+
+
+def insert_samples(conn, activity_id: int, parsed: ParsedActivity) -> None:
+    conn.executemany(
+        "INSERT INTO samples (activity_id, ts, hr, distance_m, speed_mps, altitude_m) VALUES (?,?,?,?,?,?)",
+        [(activity_id, s["ts"], s["hr"], s["distance_m"], s["speed_mps"], s["altitude_m"])
+         for s in parsed.samples],
+    )
+
+
+def reparse_outdated(conn) -> int:
+    """Re-read activities imported by an older parser from their original file.
+
+    Only the fields the parser has learned since are refreshed (samples and
+    elevation); start time, assignment, notes and zones are left as they are.
+    """
+    rows = conn.execute(
+        "SELECT id, stored_path FROM activities WHERE parser_version < ?", (PARSER_VERSION,)
+    ).fetchall()
+    updated = 0
+    for a in rows:
+        path = Path(a["stored_path"])
+        if not path.exists():
+            continue
+        try:
+            parsed = parse_fit(path.read_bytes())
+        except FitError:
+            continue
+        conn.execute("DELETE FROM samples WHERE activity_id=?", (a["id"],))
+        insert_samples(conn, a["id"], parsed)
+        conn.execute(
+            "UPDATE activities SET ascent_m=?, descent_m=?, elevation_source=?, parser_version=? WHERE id=?",
+            (parsed.ascent_m, parsed.descent_m, parsed.elevation_source, PARSER_VERSION, a["id"]),
+        )
+        updated += 1
+    conn.commit()
+    return updated
+
+
+def drift_for(conn, activity_id: int) -> dict:
+    samples = [dict(r) for r in conn.execute(
+        "SELECT ts, hr, speed_mps FROM samples WHERE activity_id=? ORDER BY ts", (activity_id,))]
+    events = [dict(r) for r in conn.execute(
+        "SELECT ts, event, event_type FROM timer_events WHERE activity_id=?", (activity_id,))]
+    return hr_drift(samples, events)
 
 
 def week_for_date(conn, iso_date: str):
@@ -247,6 +297,98 @@ def get_week(number: int):
     return week_payload(conn, w)
 
 
+@app.get("/api/block")
+def block_overview():
+    """Whole-block view: per-week totals plus one row per run for trend charts."""
+    conn = get_conn()
+    today = date.today().isoformat()
+    zone_order = [z.name for z in get_zones(conn)]
+
+    weeks_out = []
+    planned_to_date = 0.0
+    for w in conn.execute("SELECT * FROM weeks ORDER BY number").fetchall():
+        wp = week_payload(conn, w)
+        planned_to_date += sum(s["target_km"] for s in wp["sessions"] if s["planned_date"] <= today)
+        long = next((s for s in wp["sessions"] if s["label"] == "L"), None)
+        long_act = long["activity"] if long else None
+
+        zone_secs: dict[str, float] = {}
+        for r in conn.execute(
+            """SELECT zr.zone_name, SUM(zr.seconds) AS secs FROM zone_results zr
+               JOIN activities a ON a.id = zr.activity_id WHERE a.week_id=? GROUP BY zr.zone_name""",
+            (w["id"],),
+        ):
+            zone_secs[r["zone_name"]] = round(r["secs"])
+            if r["zone_name"] not in zone_order:
+                zone_order.append(r["zone_name"])
+        unknown = conn.execute(
+            """SELECT COALESCE(SUM(zr.unknown_hr_s), 0) FROM zone_runs zr
+               JOIN activities a ON a.id = zr.activity_id WHERE a.week_id=?""",
+            (w["id"],),
+        ).fetchone()[0]
+        ascent = conn.execute(
+            "SELECT SUM(ascent_m) FROM activities WHERE week_id=?", (w["id"],)
+        ).fetchone()[0]
+
+        weeks_out.append({
+            "number": wp["number"],
+            "start_date": wp["start_date"],
+            "end_date": wp["end_date"],
+            "notes": wp["notes"],
+            "started": wp["start_date"] <= today,
+            "current": wp["start_date"] <= today <= wp["end_date"],
+            "planned_km": wp["planned_km"],
+            "actual_km": wp["actual_km"],
+            "actual_duration_s": wp["actual_duration_s"],
+            "sessions_completed": wp["sessions_completed"],
+            "sessions_planned": wp["sessions_planned"],
+            "ascent_m": round(ascent) if ascent is not None else None,
+            "long_run": {
+                "planned_km": long["target_km"] if long else None,
+                "actual_km": long_act["distance_km"] if long_act else None,
+                "time_s": long_act["timer_time_s"] if long_act else None,
+                "ascent_m": long_act["ascent_m"] if long_act else None,
+            },
+            "zone_seconds": zone_secs,
+            "unknown_hr_s": round(unknown),
+        })
+
+    week_numbers = {w["id"]: w["number"] for w in conn.execute("SELECT id, number FROM weeks")}
+    runs = []
+    for a in conn.execute(
+        """SELECT a.*, s.label FROM activities a LEFT JOIN sessions s ON s.id = a.session_id
+           ORDER BY a.start_time"""
+    ).fetchall():
+        km_ = a["distance_m"] / 1000 if a["distance_m"] else None
+        drift = drift_for(conn, a["id"])["drift_pct"] if a["has_hr"] else None
+        runs.append({
+            "id": a["id"],
+            "start_time": a["start_time"],
+            "week_number": week_numbers.get(a["week_id"]),
+            "label": "extra" if a["is_extra"] else a["label"],
+            "distance_km": round(km_, 2) if km_ else None,
+            "timer_time_s": a["timer_time_s"],
+            "avg_hr": a["avg_hr"],
+            "pace_min_km": round(a["timer_time_s"] / 60 / km_, 2) if km_ and a["timer_time_s"] else None,
+            "ascent_m": round(a["ascent_m"]) if a["ascent_m"] is not None else None,
+            "hr_drift_pct": drift,
+        })
+
+    return {
+        "weeks": weeks_out,
+        "zone_names": zone_order,
+        "runs": runs,
+        "totals": {
+            "planned_to_date_km": round(planned_to_date, 1),
+            "actual_km": round(sum(w["actual_km"] for w in weeks_out), 1),
+            "planned_block_km": round(sum(w["planned_km"] for w in weeks_out), 1),
+            "runs": len(runs),
+            "time_s": sum(w["actual_duration_s"] for w in weeks_out),
+            "ascent_m": round(sum(r["ascent_m"] or 0 for r in runs)),
+        },
+    }
+
+
 @app.patch("/api/sessions/{session_id}")
 def update_session(session_id: int, payload: dict = Body(...)):
     conn = get_conn()
@@ -341,9 +483,10 @@ def confirm_upload(payload: dict = Body(...)):
     cur = conn.execute(
         """INSERT INTO activities
            (file_hash, original_filename, stored_path, start_time, distance_m, timer_time_s,
-            elapsed_time_s, duration_source, avg_hr, max_hr, has_hr, sport, is_demo,
+            elapsed_time_s, duration_source, avg_hr, max_hr, has_hr, sport,
+            ascent_m, descent_m, elevation_source, parser_version, is_demo,
             week_id, session_id, is_extra, extra_type, rpe, note, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             token,
             payload.get("filename") or stored.name,
@@ -357,6 +500,10 @@ def confirm_upload(payload: dict = Body(...)):
             parsed.max_hr,
             int(parsed.has_hr),
             parsed.sport,
+            parsed.ascent_m,
+            parsed.descent_m,
+            parsed.elevation_source,
+            PARSER_VERSION,
             int(bool(payload.get("is_demo"))),
             week["id"],
             None if is_extra else session_id,
@@ -368,10 +515,7 @@ def confirm_upload(payload: dict = Body(...)):
         ),
     )
     aid = cur.lastrowid
-    conn.executemany(
-        "INSERT INTO samples (activity_id, ts, hr, distance_m, speed_mps) VALUES (?,?,?,?,?)",
-        [(aid, s["ts"], s["hr"], s["distance_m"], s["speed_mps"]) for s in parsed.samples],
-    )
+    insert_samples(conn, aid, parsed)
     conn.executemany(
         """INSERT INTO laps (activity_id, idx, start_time, distance_m, timer_time_s,
                              elapsed_time_s, avg_hr, max_hr) VALUES (?,?,?,?,?,?,?,?)""",
@@ -401,7 +545,7 @@ def get_activity(activity_id: int):
     if not a:
         raise HTTPException(404, "Activity not found")
     samples = conn.execute(
-        "SELECT ts, hr, distance_m, speed_mps FROM samples WHERE activity_id=? ORDER BY ts",
+        "SELECT ts, hr, distance_m, speed_mps, altitude_m FROM samples WHERE activity_id=? ORDER BY ts",
         (activity_id,),
     ).fetchall()
     start = samples[0]["ts"] if samples else 0
@@ -413,6 +557,7 @@ def get_activity(activity_id: int):
             if s["speed_mps"] and s["speed_mps"] > 0.5
             else None,
             "km": round(s["distance_m"] / 1000, 3) if s["distance_m"] is not None else None,
+            "alt": round(s["altitude_m"], 1) if s["altitude_m"] is not None else None,
         }
         for s in samples
     ]
@@ -423,6 +568,7 @@ def get_activity(activity_id: int):
         "series": series,
         "laps": laps,
         "zones": zone_payload(conn, activity_id),
+        "hr_drift": drift_for(conn, activity_id) if a["has_hr"] else None,
     }
 
 

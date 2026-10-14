@@ -150,3 +150,101 @@ def test_persistence_after_restart():
     assert sum(w["sessions_completed"] for w in weeks) == 1
     assert len(client.get("/api/activities").json()) == 1
     assert len(weeks) == 13  # no duplicate seeding
+
+
+def hilly_long_run(start: datetime) -> bytes:
+    from fit_fixture import make_fit
+
+    speed = 1000 / (7 * 60)
+    secs = 60 * 60
+    samples = [(t, 130 if t < 35 * 60 else 138, speed * t, speed) for t in range(secs + 1)]
+    alts = [30 + 40 * (1 - abs(t - secs / 2) / (secs / 2)) for t in range(secs + 1)]  # up and back
+    return make_fit(start, samples, altitudes=alts)
+
+
+def test_elevation_and_drift_in_activity_detail():
+    prev = upload(hilly_long_run(datetime(2026, 2, 8, 8, 0, tzinfo=timezone.utc)), "long.fit").json()
+    week = client.get("/api/weeks/5").json()
+    long_s = next(s for s in week["sessions"] if s["label"] == "L")
+    aid = client.post(
+        "/api/activities/confirm",
+        json={"token": prev["token"], "week_number": 5, "session_id": long_s["id"]},
+    ).json()["id"]
+
+    d = client.get(f"/api/activities/{aid}").json()
+    assert d["ascent_m"] == pytest.approx(40, abs=3)
+    assert d["descent_m"] == pytest.approx(40, abs=3)
+    assert d["elevation_source"] == "samples"
+    assert d["series"][0]["alt"] == pytest.approx(30, abs=0.3)
+    assert d["hr_drift"]["drift_pct"] > 0
+    assert d["hr_drift"]["second"]["avg_hr"] > d["hr_drift"]["first"]["avg_hr"]
+
+
+def test_block_overview():
+    b = client.get("/api/block").json()
+    assert len(b["weeks"]) == 13
+    w5 = next(w for w in b["weeks"] if w["number"] == 5)
+    assert w5["long_run"]["planned_km"] == 11
+    assert w5["long_run"]["actual_km"] == pytest.approx(60 * 60 / 420, abs=0.05)
+    assert w5["ascent_m"] == pytest.approx(40, abs=3)
+    assert w5["zone_seconds"]["Z2"] == pytest.approx(60 * 60, abs=5)  # 130 and 138 bpm
+    assert w5["zone_seconds"]["Z1"] == 0
+    assert b["zone_names"][:3] == ["Z1", "Z2", "Z3"]
+
+    long_run = next(r for r in b["runs"] if r["label"] == "L")
+    assert long_run["week_number"] == 5
+    assert long_run["hr_drift_pct"] > 0
+    assert long_run["pace_min_km"] == pytest.approx(7, abs=0.05)
+    assert b["totals"]["runs"] == 2
+    assert b["totals"]["actual_km"] == pytest.approx(6.4 + 60 * 60 / 420, abs=0.1)
+
+
+def test_runs_imported_before_elevation_are_reread_from_the_original_file():
+    conn = main.get_conn()
+    aid = next(r["id"] for r in client.get("/api/block").json()["runs"] if r["label"] == "L")
+    conn.execute("UPDATE samples SET altitude_m=NULL WHERE activity_id=?", (aid,))
+    conn.execute(
+        "UPDATE activities SET ascent_m=NULL, descent_m=NULL, elevation_source=NULL, parser_version=1, "
+        "note='kept' WHERE id=?", (aid,))
+    conn.commit()
+
+    assert main.reparse_outdated(conn) == 1
+    d = client.get(f"/api/activities/{aid}").json()
+    assert d["ascent_m"] == pytest.approx(40, abs=3)
+    assert d["series"][0]["alt"] is not None
+    assert d["note"] == "kept"
+    assert d["zones"] is not None
+    assert main.reparse_outdated(conn) == 0  # nothing left to do
+
+
+def test_old_databases_get_the_new_columns(tmp_path):
+    import sqlite3
+
+    from app.db import connect, init_db
+
+    from app.db import MIGRATIONS, SCHEMA
+
+    # The first-release schema: today's minus the migrated columns.
+    added = {name for cols in MIGRATIONS.values() for name, _ in cols}
+    first_release = "\n".join(
+        line for line in SCHEMA.read_text().splitlines()
+        if line.strip().split(" ")[0] not in added
+    ).replace("speed_mps   REAL,", "speed_mps   REAL")
+
+    path = tmp_path / "old.sqlite3"
+    old = sqlite3.connect(path)
+    old.executescript(first_release)
+    assert "ascent_m" not in {r[1] for r in old.execute("PRAGMA table_info(activities)")}
+    old.execute(
+        "INSERT INTO activities (file_hash, original_filename, stored_path, start_time, "
+        "duration_source, created_at) VALUES ('abc', 'a.fit', 'a.fit', '2026-01-01', 'timer', '2026-01-01')"
+    )
+    old.commit()
+    old.close()
+
+    conn = connect(path)
+    init_db(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(activities)")}
+    assert {"ascent_m", "descent_m", "elevation_source", "parser_version"} <= cols
+    assert "altitude_m" in {r["name"] for r in conn.execute("PRAGMA table_info(samples)")}
+    assert conn.execute("SELECT parser_version FROM activities").fetchone()[0] == 1

@@ -14,6 +14,14 @@ FIT_EPOCH = 631065600  # 1989-12-31T00:00:00Z
 
 from .config import MAX_UNCOMPRESSED_BYTES, MAX_ZIP_ENTRIES, MAX_SAMPLE_GAP_SECONDS
 
+# Bump when parse_fit starts storing something new, so files already imported
+# are re-read from their original bytes (see main.reparse_outdated).
+PARSER_VERSION = 2
+
+# Altitude changes smaller than this are treated as sensor noise when the file
+# has no ascent/descent totals and they have to be computed from the samples.
+ELEVATION_NOISE_M = 3.0
+
 
 class FitError(Exception):
     """Raised with a plain-language message for corrupt/unsupported uploads."""
@@ -30,6 +38,9 @@ class ParsedActivity:
     max_hr: int | None
     has_hr: bool
     sport: str | None
+    ascent_m: float | None = None
+    descent_m: float | None = None
+    elevation_source: str | None = None  # 'device' | 'samples' | None (no altitude)
     samples: list[dict] = field(default_factory=list)
     laps: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
@@ -118,12 +129,14 @@ def parse_fit(data: bytes) -> ParsedActivity:
             continue
         hr = r.get("heart_rate")
         speed = r.get("enhanced_speed", r.get("speed"))
+        alt = r.get("enhanced_altitude", r.get("altitude"))
         samples.append(
             {
                 "ts": ts,
                 "hr": int(hr) if isinstance(hr, (int, float)) and hr > 0 else None,
                 "distance_m": float(r["distance"]) if r.get("distance") is not None else None,
                 "speed_mps": float(speed) if speed is not None else None,
+                "altitude_m": float(alt) if isinstance(alt, (int, float)) else None,
             }
         )
     if not samples and not sessions:
@@ -165,6 +178,13 @@ def parse_fit(data: bytes) -> ParsedActivity:
     avg_hr = sess.get("avg_heart_rate") or (round(sum(hrs) / len(hrs)) if hrs else None)
     max_hr = sess.get("max_heart_rate") or (max(hrs) if hrs else None)
 
+    ascent, descent = sess.get("total_ascent"), sess.get("total_descent")
+    if ascent is not None or descent is not None:
+        elevation_source = "device"
+    else:
+        ascent, descent = elevation_from_samples(samples)
+        elevation_source = "samples" if ascent is not None else None
+
     laps = []
     for i, lp in enumerate(laps_raw):
         lts = _ts(lp.get("start_time"))
@@ -190,10 +210,34 @@ def parse_fit(data: bytes) -> ParsedActivity:
         max_hr=int(max_hr) if max_hr else None,
         has_hr=bool(hrs),
         sport=sess.get("sport"),
+        ascent_m=float(ascent) if ascent is not None else None,
+        descent_m=float(descent) if descent is not None else None,
+        elevation_source=elevation_source,
         samples=samples,
         laps=laps,
         events=events,
     )
+
+
+def elevation_from_samples(samples: list[dict]) -> tuple[float | None, float | None]:
+    """Total climb and descent, ignoring wiggles under ELEVATION_NOISE_M.
+
+    Only used when the watch did not write its own totals in the session.
+    """
+    alts = [s["altitude_m"] for s in sorted(samples, key=lambda s: s["ts"])
+            if s.get("altitude_m") is not None]
+    if len(alts) < 2:
+        return None, None
+    ascent = descent = 0.0
+    ref = alts[0]
+    for a in alts[1:]:
+        if a - ref >= ELEVATION_NOISE_M:
+            ascent += a - ref
+            ref = a
+        elif ref - a >= ELEVATION_NOISE_M:
+            descent += ref - a
+            ref = a
+    return ascent, descent
 
 
 def _sum_moving_seconds(samples: list[dict], events: list[dict]) -> float:
