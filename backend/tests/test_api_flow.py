@@ -225,11 +225,14 @@ def test_old_databases_get_the_new_columns(tmp_path):
     from app.db import MIGRATIONS, SCHEMA
 
     # The first-release schema: today's minus the migrated columns.
-    added = {name for cols in MIGRATIONS.values() for name, _ in cols}
-    first_release = "\n".join(
-        line for line in SCHEMA.read_text().splitlines()
-        if line.strip().split(" ")[0] not in added
-    ).replace("speed_mps   REAL,", "speed_mps   REAL")
+    added = {(table, name) for table, cols in MIGRATIONS.items() for name, _ in cols}
+    lines, table = [], None
+    for line in SCHEMA.read_text().splitlines():
+        if line.startswith("CREATE TABLE"):
+            table = line.split()[-2]
+        if (table, line.strip().split(" ")[0]) not in added:
+            lines.append(line)
+    first_release = "\n".join(lines).replace("speed_mps   REAL,", "speed_mps   REAL")
 
     path = tmp_path / "old.sqlite3"
     old = sqlite3.connect(path)
@@ -248,6 +251,8 @@ def test_old_databases_get_the_new_columns(tmp_path):
     assert {"ascent_m", "descent_m", "elevation_source", "parser_version"} <= cols
     assert "altitude_m" in {r["name"] for r in conn.execute("PRAGMA table_info(samples)")}
     assert conn.execute("SELECT parser_version FROM activities").fetchone()[0] == 1
+    session_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
+    assert {"override_date", "status", "user_note"} <= session_cols
 
 
 # ------------------------------------------------------------------ watched folder

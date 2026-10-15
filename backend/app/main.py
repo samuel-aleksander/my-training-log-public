@@ -18,6 +18,7 @@ from .db import connect, init_db
 from .fit_parser import PARSER_VERSION, FitError, ParsedActivity, extract_fit_bytes, parse_fit, sha256
 from .matching import suggest_session
 from .metrics import hr_drift
+from .plan_edits import PlanError, session_date, target_duration, target_km, write_session
 from .seed import effort_context, seed
 
 log = logging.getLogger("marathon")
@@ -63,16 +64,6 @@ def get_zones(conn) -> list[zonelib.Zone]:
     return zonelib.parse_zones(json.loads(row["value"])) if row else []
 
 
-def target_km(s: sqlite3.Row) -> float:
-    return s["override_km"] if s["override_km"] is not None else s["seeded_km"]
-
-
-def target_duration(s: sqlite3.Row) -> float | None:
-    if s["override_duration_min"] is not None:
-        return s["override_duration_min"]
-    return s["seeded_duration_min"]
-
-
 def activity_dict(a: sqlite3.Row) -> dict:
     return {
         "id": a["id"],
@@ -101,7 +92,8 @@ def activity_dict(a: sqlite3.Row) -> dict:
 
 def week_payload(conn, week: sqlite3.Row) -> dict:
     sessions = conn.execute(
-        "SELECT * FROM sessions WHERE week_id=? ORDER BY planned_date", (week["id"],)
+        "SELECT * FROM sessions WHERE week_id=? ORDER BY COALESCE(override_date, planned_date), label",
+        (week["id"],),
     ).fetchall()
     today = date.today().isoformat()
 
@@ -112,7 +104,10 @@ def week_payload(conn, week: sqlite3.Row) -> dict:
     duration_total = 0.0
     for s in sessions:
         tkm = target_km(s)
-        planned_total += tkm
+        skipped = s["status"] == "skipped"  # skipped on purpose: not part of the week's plan
+        if not skipped:
+            planned_total += tkm
+        day = session_date(s)
         act = conn.execute("SELECT * FROM activities WHERE session_id=?", (s["id"],)).fetchone()
         actual_km = None
         if act:
@@ -122,18 +117,21 @@ def week_payload(conn, week: sqlite3.Row) -> dict:
             completed += 1
             status = "completed"
         else:
-            status = "planned" if s["planned_date"] >= today else "skipped"
+            status = "skipped" if skipped or day < today else "planned"
         tdur = target_duration(s)
         session_items.append(
             {
                 "id": s["id"],
                 "label": s["label"],
-                "planned_date": s["planned_date"],
+                "planned_date": day,
+                "original_date": s["planned_date"],
+                "plan_status": s["status"],
                 "seeded_km": s["seeded_km"],
                 "target_km": tkm,
                 "target_duration_min": tdur,
                 "target_duration_display": f"{tdur:g} min" if tdur is not None else "Not set",
                 "notes": s["notes"],
+                "user_note": s["user_note"],
                 "status": status,
                 "actual_km": actual_km,
                 "diff_km": round(actual_km - tkm, 3) if actual_km is not None else None,
@@ -166,7 +164,7 @@ def week_payload(conn, week: sqlite3.Row) -> dict:
         "diff_km": round(actual_total - planned_total, 2),
         "completion_pct": round(actual_total / planned_total * 100, 1) if planned_total else None,
         "sessions_completed": completed,
-        "sessions_planned": len(sessions),
+        "sessions_planned": sum(1 for s in sessions if s["status"] != "skipped"),
         "actual_duration_s": round(duration_total),
         "sessions": session_items,
         "extras": [activity_dict(e) for e in extras],
@@ -275,7 +273,7 @@ def week_detail(conn, week: sqlite3.Row, wp: dict) -> dict:
     days = []
     for i in range(7):
         d = (start + timedelta(days=i)).isoformat()
-        planned = [s for s in wp["sessions"] if s["planned_date"] == d]
+        planned = [s for s in wp["sessions"] if s["planned_date"] == d and s["plan_status"] != "skipped"]
         ran = [r for r in runs if datetime.fromisoformat(r["start_time"]).astimezone().date().isoformat() == d]
         days.append({
             "date": d,
@@ -302,12 +300,12 @@ def week_detail(conn, week: sqlite3.Row, wp: dict) -> dict:
 
 def free_sessions(conn, week_id: int) -> list[dict]:
     rows = conn.execute(
-        """SELECT s.* FROM sessions s WHERE s.week_id=?
+        """SELECT s.* FROM sessions s WHERE s.week_id=? AND s.status <> 'skipped'
            AND NOT EXISTS (SELECT 1 FROM activities a WHERE a.session_id = s.id)
-           ORDER BY s.planned_date""",
+           ORDER BY COALESCE(s.override_date, s.planned_date)""",
         (week_id,),
     ).fetchall()
-    return [{"id": s["id"], "label": s["label"], "planned_date": s["planned_date"],
+    return [{"id": s["id"], "label": s["label"], "planned_date": session_date(s),
              "target_km": target_km(s)} for s in rows]
 
 
@@ -616,8 +614,9 @@ def block_payload(conn) -> dict:
     planned_to_date = 0.0
     for w in conn.execute("SELECT * FROM weeks ORDER BY number").fetchall():
         wp = week_payload(conn, w)
-        planned_to_date += sum(s["target_km"] for s in wp["sessions"] if s["planned_date"] <= today)
-        long = next((s for s in wp["sessions"] if s["label"] == "L"), None)
+        active = [s for s in wp["sessions"] if s["plan_status"] != "skipped"]
+        planned_to_date += sum(s["target_km"] for s in active if s["planned_date"] <= today)
+        long = next((s for s in active if s["label"] == "L"), None)
         long_act = long["activity"] if long else None
 
         zone_secs: dict[str, float] = {}
@@ -700,21 +699,20 @@ def block_payload(conn) -> dict:
 
 @app.patch("/api/sessions/{session_id}")
 def update_session(session_id: int, payload: dict = Body(...)):
+    """Edit a session: override_km, override_duration_min, override_date (a day of the
+    same week), status ('planned' | 'skipped') and user_note. null clears a value."""
     conn = get_conn()
-    s = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
-    if not s:
+    if not conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
         raise HTTPException(404, "Session not found")
-    fields = {}
-    if "override_km" in payload:
-        fields["override_km"] = payload["override_km"]
-    if "override_duration_min" in payload:
-        fields["override_duration_min"] = payload["override_duration_min"]
-    for k, v in fields.items():
-        conn.execute(f"UPDATE sessions SET {k}=? WHERE id=?", (v, session_id))
+    try:
+        s = write_session(conn, session_id, payload)
+    except PlanError as exc:
+        conn.rollback()
+        raise HTTPException(400, str(exc))
     conn.commit()
-    s = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
     return {"id": s["id"], "seeded_km": s["seeded_km"], "target_km": target_km(s),
-            "target_duration_min": target_duration(s)}
+            "target_duration_min": target_duration(s), "planned_date": session_date(s),
+            "plan_status": s["status"], "user_note": s["user_note"]}
 
 
 @app.post("/api/uploads/preview")

@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   override_km            REAL,               -- optional user edit
   seeded_duration_min    REAL,               -- NULL: plan has no duration target
   override_duration_min  REAL,
-  notes                  TEXT,
+  notes                  TEXT,               -- the plan's text for the session, never edited
+  override_date          TEXT,               -- moved to another day of the same week
+  status                 TEXT NOT NULL DEFAULT 'planned',  -- planned | skipped | added (not in the plan)
+  user_note              TEXT,               -- your own note on the session, apart from the plan's
   UNIQUE (week_id, label)
 );
 
@@ -131,4 +134,22 @@ CREATE TABLE IF NOT EXISTS week_notes (
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- Every change made to the plan from a chat with Claude: proposed, then applied
+-- once you say yes, and revertible. Values are JSON. session_id is not a foreign
+-- key: reverting an added session removes it, and its log entry stays.
+CREATE TABLE IF NOT EXISTS plan_changes (
+  id           INTEGER PRIMARY KEY,
+  kind         TEXT NOT NULL,      -- set_km | set_duration | move | skip | add | note
+  session_id   INTEGER,            -- NULL for an add until it is applied
+  field        TEXT,               -- the sessions column written; NULL for an add
+  from_value   TEXT,
+  to_value     TEXT,
+  reason       TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- pending | applied | rejected | reverted
+  warnings     TEXT NOT NULL DEFAULT '[]',       -- [{"level": "warn"|"block", "rule", "message"}]
+  created_at   TEXT NOT NULL,
+  applied_at   TEXT,
+  reverted_at  TEXT
 );

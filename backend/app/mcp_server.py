@@ -1,11 +1,15 @@
-"""Read-only MCP server: lets Claude Desktop look at the plan and your runs.
+"""MCP server: lets Claude Desktop look at the plan and your runs, and change the
+plan once you agree.
 
 Run from backend/ (Claude Desktop starts it for you, see the README):
 
     .venv/bin/python -m app.mcp_server
 
-Every tool only reads. Each call opens its own connection with
-PRAGMA query_only, so nothing here can change the plan or your runs.
+The read tools open their own connection with PRAGMA query_only, so they can't
+write. Only propose_change, apply_change and revert_change write, on a separate
+connection, and only through plan_changes: a change is proposed and checked,
+applied when you say yes (Claude Desktop also asks you to allow the call), and
+can be reverted. Runs are never changed.
 
 What these tools return is what leaves your machine: per-run and per-week
 summaries, laps, zones, notes, and the two private docs. Never the recorded
@@ -22,9 +26,12 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from . import config
-from .db import connect
-from .main import activity_dict, block_payload, drift_for, get_zones, run_summary, target_km, week_detail, week_payload
+from typing import Literal
+
+from . import config, plan_changes
+from .db import connect, init_db
+from .main import activity_dict, block_payload, drift_for, get_zones, run_summary, week_detail, week_payload
+from .plan_edits import PlanError, target_km
 from .seed import SESSION_DAYS, load_plan
 
 INSTRUCTIONS = """\
@@ -35,28 +42,80 @@ Training log for one athlete (the user) following a 13-week marathon base block.
 - Sessions per week: A (Tuesday, easy), B (Thursday, longer easy), C (Saturday, short
   and comfortable), L (Sunday, easy long run). Extra runs are unplanned and count in the
   week's total.
-- "skipped" means the planned date has passed with no run assigned to the session.
+- A session's status "skipped" means either it was skipped on purpose (plan_status
+  "skipped") or its date passed with no run assigned. plan_status "added" marks a session
+  added outside the plan; original_date differs from planned_date when it was moved.
 - HR zones are the athlete's own limits. HR drift % is how much pace per heartbeat drops
   from the first to the second half of a run (after a 10-minute warm-up): positive means
   the heart rate crept up. The app applies no threshold to it.
 - The athlete profile records past left-knee pain: watch the notes for knee mentions.
-- These tools are read-only: you cannot change the plan. When you recommend a change,
-  state it precisely (week, session, from -> to, reason); the athlete applies it.
+
+Changing the plan (the athlete decides, always):
+1. Call propose_change for one change at a time: a session's km or duration target,
+   moving it to another day of its week, skipping it, the athlete's note on it, or
+   adding a session. It changes nothing; it checks the change and returns it with
+   warnings.
+2. Show the athlete the summary (from -> to), your reason and every warning, word for
+   word, and ask whether to apply it.
+3. Call apply_change only after the athlete clearly says yes to that change. Never
+   apply on your own initiative, never several at once on one yes unless they agreed
+   to each, and never to "test" it. If apply_change reports new warnings, show them
+   and ask again.
+- Blocked changes can't be overridden: explain why (the knee rule means a recent note
+  mentions the knee). Warnings are the athlete's call.
+- revert_change undoes an applied change; call it only when the athlete asks.
+- get_changelog lists what was proposed, applied, rejected and reverted.
 """
 
 mcp = MCPServer("marathon-training-log", instructions=INSTRUCTIONS)
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
+# Logs a proposal; the plan itself is untouched.
+PROPOSES = ToolAnnotations(destructive_hint=False, idempotent_hint=False, open_world_hint=False)
+# Changes the plan (revertible, but it overwrites what is there).
+CHANGES_PLAN = ToolAnnotations(destructive_hint=True, idempotent_hint=False, open_world_hint=False)
+
+_schema_checked: set = set()
+
+
+def ensure_schema() -> None:
+    """Bring an older database up to date once, before the first read or write.
+
+    The web app does this on start; without it, a database the app hasn't
+    opened since an update would lack the newest columns.
+    """
+    if not config.DB_PATH.exists():
+        raise ToolError("There is no database yet. Start the app once with ./dev.sh so the plan is seeded.")
+    if config.DB_PATH in _schema_checked:
+        return
+    conn = connect()
+    try:
+        init_db(conn)
+    finally:
+        conn.close()
+    _schema_checked.add(config.DB_PATH)
 
 
 @contextmanager
 def read_db():
-    if not config.DB_PATH.exists():
-        raise ToolError("There is no database yet. Start the app once with ./dev.sh so the plan is seeded.")
+    ensure_schema()
     conn = connect()
     conn.execute("PRAGMA query_only = ON")
     try:
         yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def write_db():
+    """The only connection that writes. PlanError becomes a message for Claude."""
+    ensure_schema()
+    conn = connect()
+    try:
+        yield conn
+    except PlanError as exc:
+        raise ToolError(str(exc)) from None
     finally:
         conn.close()
 
@@ -211,7 +270,10 @@ def get_week(week: int) -> dict:
                 "plan_original_km": s["seeded_km"],
                 "target_duration_min": s["target_duration_min"],
                 "description": s["notes"],
+                "your_note": s["user_note"],
                 "status": s["status"],
+                "plan_status": s["plan_status"],
+                **({"original_date": s["original_date"]} if s["original_date"] != s["planned_date"] else {}),
                 "diff_km": s["diff_km"],
                 "run": run_brief(s["activity"]) if s["activity"] else None,
             }
@@ -438,6 +500,66 @@ def get_plan_document() -> str:
     return private_doc("plan-base-13-semanas.md")
 
 
+# --------------------------------------------------------------------------- changing the plan
+
+
+@mcp.tool(annotations=PROPOSES)
+def propose_change(
+    kind: Literal["set_km", "set_duration", "move", "skip", "add", "note"],
+    reason: str,
+    session_id: int | None = None,
+    km: float | None = None,
+    duration_min: float | None = None,
+    date: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """Propose one change to the plan. Nothing changes until apply_change.
+
+    kind and what it needs (session_id comes from get_week):
+    - set_km: session_id, km (the new target)
+    - set_duration: session_id, duration_min
+    - move: session_id, date (YYYY-MM-DD, a day of the same week)
+    - skip: session_id (plan sessions are skipped, never deleted)
+    - add: date, km, optionally duration_min and note (a session outside the plan)
+    - note: session_id, note (the athlete's own note on the session; "" clears it)
+    reason: why, in a sentence, as you'd explain it to the athlete.
+
+    Returns the change id, a from -> to summary and warnings. Show all of it to the
+    athlete and wait for a clear yes before apply_change. A change the rules block is
+    refused with the reasons (and logged as rejected)."""
+    with write_db() as conn:
+        return plan_changes.propose(conn, kind, reason, session_id=session_id, km=km,
+                                    duration_min=duration_min, date=date, note=note)
+
+
+@mcp.tool(annotations=CHANGES_PLAN)
+def apply_change(change_id: int) -> dict:
+    """Apply a proposed change. Only call this after the athlete has said yes to this
+    exact change. The rules run again; if something changed since the proposal, it is
+    refused or comes back with new warnings to show before asking again."""
+    with write_db() as conn:
+        return plan_changes.apply(conn, change_id)
+
+
+@mcp.tool(annotations=CHANGES_PLAN)
+def revert_change(change_id: int) -> dict:
+    """Undo an applied change, restoring what was there before (an added session is
+    removed). Only when the athlete asks. Changes to the same session are undone
+    newest first."""
+    with write_db() as conn:
+        return plan_changes.revert(conn, change_id)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_changelog(
+    status: Literal["pending", "applied", "rejected", "reverted"] | None = None, limit: int = 50
+) -> list[dict]:
+    """Changes to the plan made from chat, newest first: what, why, warnings, and when
+    each was applied or reverted."""
+    with read_db() as conn:
+        return plan_changes.changelog(conn, status, limit)
+
+
 # --------------------------------------------------------------------------- prompts
 
 
@@ -452,7 +574,8 @@ def review_block() -> str:
         "2. What the trends (HR drift, HR, zones, pace, long run) say about my aerobic base.\n"
         "3. Warning signs: missed sessions, jumps in load, high RPE, any knee mentions.\n"
         "4. Concrete adjustments for the coming weeks, each as week, session, from -> to, and why.\n"
-        "Quote the numbers the tools return; don't estimate them."
+        "Quote the numbers the tools return; don't estimate them. Don't propose or apply "
+        "changes unless I ask you to."
     )
 
 

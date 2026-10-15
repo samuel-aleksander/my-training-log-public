@@ -193,12 +193,47 @@ together: the database stores the path and hash of each file.
 ## Talking to Claude about your training (MCP)
 
 `backend/app/mcp_server.py` is a local MCP server that lets Claude Desktop read the plan and
-your runs, so you can ask it to review the block or talk through a week. It only reads: each
-call opens the database with `PRAGMA query_only`, so it cannot change the plan or your runs.
+your runs, so you can ask it to review the block or talk through a week, and change the plan
+when you agree to it.
 
-Tools: `get_plan_overview` (start here), `get_week`, `get_run`, `list_runs`, `get_block_trends`,
-`get_notes`, `get_athlete_profile` and `get_plan_document`. Prompts: **Review my block** and
-**Discuss a week**.
+Read tools: `get_plan_overview` (start here), `get_week`, `get_run`, `list_runs`,
+`get_block_trends`, `get_notes`, `get_athlete_profile`, `get_plan_document` and
+`get_changelog`. Each call opens the database with `PRAGMA query_only`, so they can't write.
+Prompts: **Review my block** and **Discuss a week**.
+
+### Changing the plan from chat
+
+Claude can change one session at a time: its km or duration target, the day (within its week),
+skipping it, your note on it, or adding a session outside the plan. It always goes:
+
+1. `propose_change` checks the change and logs it as pending. Nothing changes yet; Claude shows
+   you the change (from -> to), its reason and any warnings.
+2. You say yes in the chat. Then Claude calls `apply_change`, and Claude Desktop asks you to
+   allow it. If something changed in between, the rules run again and new warnings come back
+   to you before anything is written.
+3. `revert_change` undoes an applied change (newest first for the same session).
+   `get_changelog` lists everything proposed, applied, rejected and reverted.
+
+The rules run on every proposal, again on apply, and on revert (`backend/app/plan_changes.py`):
+
+- **Blocked:** dates outside the block or in the past; moving to another week (skip it and add
+  one there instead); a day that already has a session; sessions that are in the past or have
+  a run assigned; km outside 1–42.2 or duration outside 5–300 min. Plan sessions are skipped,
+  never deleted; only sessions added from chat can be removed, by reverting the change.
+- **Knee rule, blocked:** if a run note, week note or session note from the last 7 days
+  mentions the knee (`knee`, `rodilla`), only changes that keep or reduce load go through. Any
+  mention counts, even "knee fine": the code doesn't judge, so edit the note if it shouldn't.
+- **Warnings, your call:** weekly km up more than ~10% on the week before (or a jump into the
+  next week), long run up more than 2 km on the week before or over ~35% of the week, long runs
+  on back-to-back days, more than 5 running days, and making a review week heavier or skipping
+  its run A. A warning only appears when the change makes that number worse, so the plan's own
+  shape (like the rebound after a review week) doesn't trip it. Done weeks count what you ran.
+
+The plan's own values (`docs/private/plan.json`, the seeded km, dates and notes) are never
+written: changes go in `override_km`, `override_duration_min`, `override_date`, `status`
+(`planned` | `skipped` | `added`) and `user_note`, and the web app shows the result (moved
+sessions on their new day, skipped ones out of the planned km, added ones in it). The web
+app's `PATCH /api/sessions/{id}` writes through the same checks for the data rules.
 
 **What leaves your machine** is what the tools return: per-run and per-week summaries, laps,
 zones, RPE, your notes, and `docs/private/athlete-profile.md` and `plan-base-13-semanas.md`.
@@ -221,10 +256,12 @@ restart Claude Desktop:
 }
 ```
 
-The web app does not need to be running, but the database must exist (start the app once).
-In Claude Desktop, set the read tools to "Always allow" so the conversation flows. The server
-reads the same environment variables as the backend (`MARATHON_DB_PATH`, …), plus
-`MARATHON_DOCS_DIR` for the private docs.
+The web app does not need to be running, but the database must exist (start the app once);
+the server adds any new columns to it on first use. In Claude Desktop, set the read tools and
+`propose_change` to "Always allow" so the conversation flows, and leave `apply_change` and
+`revert_change` on "Allow once" so every change to the plan asks you. The server reads the same
+environment variables as the backend (`MARATHON_DB_PATH`, …), plus `MARATHON_DOCS_DIR` for the
+private docs.
 
 ## Tests
 
@@ -240,7 +277,9 @@ and with two activities, unsafe paths and corrupt files; altitude, watch vs. com
 noise; heart-rate drift with warm-up, pauses and missing HR; the block overview; re-reading old
 imports; adding the new columns to an existing database; matching runs to sessions on other
 days; the import folder (ZIPs, rides, out-of-plan dates, duplicates, files never moved); and
-the MCP server (read-only connection, what each tool returns, nothing private in the output).
+the MCP server (read-only connection, what each tool returns, nothing private in the output);
+and plan changes from chat (every data, knee and training rule, apply/revert round trips, stale
+proposals, and the web app showing applied changes).
 
 Synthetic fixture: `backend/tests/fit_fixture.py` generates valid FIT files. To create a demo
 one: `python tests/fit_fixture.py demo-activity.fit`. It is test data, not real history; import
@@ -254,9 +293,12 @@ it only if you want to explore the app, and delete it afterwards.
   some unhandled field may show up.
 - No connection to Garmin/Strava, no automatic sync, no accounts and no deployment.
 - The app itself makes no predictions, training advice or medical recommendations. Claude can
-  discuss your training through the MCP server, but cannot change the plan.
+  discuss your training through the MCP server and change the plan only with your yes, within
+  the rules above.
 - One file per planned session; anything else goes in as an extra run.
-- No version history for the plan: only original values plus simple overrides.
+- Plan history covers changes made from chat (`plan_changes`); edits in the web app are not
+  logged. The web app does not yet show skipped/added/moved sessions differently, or let you
+  edit the session note.
 - The whole file is assumed to be a running activity; intervals are not recognised.
 - Position, cadence and running dynamics data are neither stored nor analysed (altitude is).
 - Drift and climb are not adjusted for each other: a hilly second half shows up as drift.

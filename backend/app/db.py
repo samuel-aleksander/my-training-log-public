@@ -26,6 +26,11 @@ MIGRATIONS = {
         ("auto_assigned", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "samples": [("altitude_m", "REAL")],
+    "sessions": [
+        ("override_date", "TEXT"),
+        ("status", "TEXT NOT NULL DEFAULT 'planned'"),
+        ("user_note", "TEXT"),
+    ],
 }
 
 
