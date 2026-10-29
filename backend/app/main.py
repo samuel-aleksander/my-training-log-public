@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, zones as zonelib
+from . import config, garmin_job, zones as zonelib
 from .db import connect, init_db
 from .fit_parser import PARSER_VERSION, FitError, ParsedActivity, extract_fit_bytes, parse_fit, sha256
 from .matching import suggest_session
@@ -952,6 +952,21 @@ def inbox_status():
 @app.post("/api/inbox/scan")
 def inbox_scan():
     return {"handled": scan_inbox(get_conn(), config.INBOX_DIR)}
+
+
+@app.get("/api/garmin/sync")
+def garmin_sync_status():
+    return garmin_job.status()
+
+
+@app.post("/api/garmin/sync")
+def garmin_sync_start(_payload: dict = Body(...)):
+    # The JSON body is only there so a browser can't fire this from another site
+    # with a plain form post: JSON needs a CORS preflight, which only the app passes.
+    try:
+        return garmin_job.start()
+    except garmin_job.GarminJobError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
 
 
 @app.get("/api/settings")

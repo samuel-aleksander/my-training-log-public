@@ -41,7 +41,8 @@ python3 -m venv .venv
 the folder is not downloaded again. The app skips anything that is not a run, falls outside the
 plan, or is already imported.
 
-`./schedule.sh run` runs the job now, `./schedule.sh log` shows its log
+**Sync from Garmin** on the app's Upload screen (shown once the job is installed) and
+`./schedule.sh run` both run the job now. `./schedule.sh log` shows its log
 (`~/Library/Logs/marathon-garmin-sync.log`) and `./schedule.sh remove` stops it. If you set
 `MARATHON_INBOX_DIR` for the app, set it when you run `install` too.
 

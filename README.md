@@ -111,7 +111,10 @@ Upload screen still works).
 
 To fill the folder automatically, `garmin_sync/` downloads new runs from Garmin Connect twice a
 day. It is separate from the app and keeps your Garmin sign-in in the macOS Keychain. See
-[garmin_sync/README.md](garmin_sync/README.md).
+[garmin_sync/README.md](garmin_sync/README.md). Once it is scheduled, **Sync from Garmin** on the
+Upload screen runs it straight away (at most once a minute), shows what it downloaded and imports
+the new runs. The app only asks launchd to start the job and reads its log; it never sees the
+sign-in.
 
 ### Backup and restore
 
@@ -283,7 +286,9 @@ imports; adding the new columns to an existing database; matching runs to sessio
 days; the import folder (ZIPs, rides, out-of-plan dates, duplicates, files never moved); and
 the MCP server (read-only connection, what each tool returns, nothing private in the output);
 and plan changes from chat (every data, knee and training rule, apply/revert round trips, stale
-proposals, and the web app showing applied changes).
+proposals, and the web app showing applied changes); and the Sync from Garmin button (with a
+fake launchd: only this run's log, sign-in problems, no double runs, once a minute, no start from
+another site, and the app never reading the token).
 
 Synthetic fixture: `backend/tests/fit_fixture.py` generates valid FIT files. To create a demo
 one: `python tests/fit_fixture.py demo-activity.fit`. It is test data, not real history; import

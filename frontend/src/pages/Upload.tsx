@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Inbox, type ListedActivity, type Week } from "../lib/api";
+import { api, type GarminSync, type Inbox, type ListedActivity, type Week } from "../lib/api";
 import { SESSION_NAMES, durationLabel, formatDate, formatDateTime, hms, km } from "../lib/format";
 import { AutoTag, Button, Card } from "../components/ui";
 
@@ -352,6 +352,8 @@ function ImportFolder({ onImported }: { onImported: () => void }) {
   const [inbox, setInbox] = useState<Inbox | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [garmin, setGarmin] = useState<GarminSync | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   const newest = useRef<string | null | undefined>(undefined);
   const load = () =>
@@ -367,10 +369,34 @@ function ImportFolder({ onImported }: { onImported: () => void }) {
       .catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
+    api.garminSync().then(setGarmin).catch(() => setGarmin(null));
     // The server checks the folder on its own; refresh the list while this screen is open.
     const t = setInterval(load, 10_000);
     return () => clearInterval(t);
   }, []);
+
+  const syncGarmin = async () => {
+    setSyncing(true);
+    setError(null);
+    try {
+      let s = await api.startGarminSync();
+      setGarmin(s);
+      while (s.installed && s.running) {
+        await sleep(2000);
+        s = await api.garminSync();
+        setGarmin(s);
+      }
+      // The folder leaves files alone for 3 s after they are written; then import them
+      // straight away instead of waiting for the next background look.
+      await sleep(3500);
+      await api.scanInbox();
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   if (!inbox) return error ? <Card className="p-4 text-sm text-bad">{error}</Card> : null;
 
@@ -384,26 +410,34 @@ function ImportFolder({ onImported }: { onImported: () => void }) {
             {inbox.poll_seconds > 0 ? ` within ${inbox.poll_seconds} s` : " when you check"}. Each run goes to the
             free session of its week that best fits its distance and day, so a run done a day early or late still
             lands on its session. Files are only read, never moved or deleted.
+            {garmin?.installed && " Sync from Garmin fetches new runs now instead of waiting for the next scheduled sync."}
           </p>
         </div>
-        <Button
-          variant="ghost"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            setError(null);
-            try {
-              await api.scanInbox();
-              await load();
-            } catch (e) {
-              setError((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          {busy ? "Checking…" : "Check now"}
-        </Button>
+        <div className="flex gap-2">
+          {garmin?.installed && (
+            <Button disabled={syncing || busy} onClick={syncGarmin}>
+              {syncing ? "Syncing…" : "Sync from Garmin"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            disabled={busy || syncing}
+            onClick={async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                await api.scanInbox();
+                await load();
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Checking…" : "Check now"}
+          </Button>
+        </div>
       </div>
 
       <code className="mt-2 block break-all rounded-lg bg-surface px-2 py-1.5 font-mono text-xs">{inbox.path}</code>
@@ -419,6 +453,14 @@ function ImportFolder({ onImported }: { onImported: () => void }) {
         </p>
       )}
       {error && <p className="mt-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{error}</p>}
+      {garmin?.installed && garmin.started_at && (garmin.lines.length > 0 || garmin.problem) && (
+        <div className="mt-2 rounded-lg bg-surface px-3 py-2 text-xs">
+          {garmin.lines.map((l, i) => (
+            <p key={i}>{l}</p>
+          ))}
+          {garmin.problem && <p className="mt-1 font-medium text-warn">{garmin.problem}</p>}
+        </div>
+      )}
 
       <div className="mt-3">
         <h3 className="text-sm font-semibold">Latest files</h3>
@@ -447,3 +489,5 @@ function ImportFolder({ onImported }: { onImported: () => void }) {
     </Card>
   );
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

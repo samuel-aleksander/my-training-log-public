@@ -91,7 +91,19 @@ export type Inbox = {
   recent: InboxEntry[];
 };
 
-export type DriftHalf = { seconds: number; avg_hr: number; pace_min_km: number };
+/** The garmin_sync launchd job: the app can start it and read its log, nothing more. */
+export type GarminSync =
+  | { installed: false }
+  | {
+      installed: true;
+      running: boolean;
+      started_at: string | null;
+      lines: string[];
+      exit_code: number | null;
+      problem: string | null;
+    };
+
+export type DriftHalf ={ seconds: number; avg_hr: number; pace_min_km: number };
 
 export type HrDrift = {
   drift_pct: number | null;
@@ -252,6 +264,8 @@ export const api = {
   activities: () => req<ListedActivity[]>("/api/activities"),
   inbox: () => req<Inbox>("/api/inbox"),
   scanInbox: () => req<{ handled: unknown[] }>("/api/inbox/scan", { method: "POST" }),
+  garminSync: () => req<GarminSync>("/api/garmin/sync"),
+  startGarminSync: () => req<GarminSync>("/api/garmin/sync", json({})),
   updateSession: (id: number, body: { override_km?: number | null; override_duration_min?: number | null }) =>
     req(`/api/sessions/${id}`, json(body, "PATCH")),
   preview: (file: File) => {
