@@ -4,6 +4,8 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ReferenceLine,
   Scatter,
   ScatterChart,
@@ -31,6 +33,7 @@ import {
 export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
   const [data, setData] = useState<BlockData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [longOnly, setLongOnly] = useState(false);
 
   const load = () => {
     setError(null);
@@ -56,9 +59,15 @@ export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
     longPlanned: w.long_run.planned_km,
     longActual: w.long_run.actual_km,
     climb: w.started ? w.ascent_m ?? 0 : null,
+    ...weekFitness(runs.filter((r) => r.week_number === w.number && (!longOnly || r.label === "L"))),
     ...Object.fromEntries(zones.map((z) => [z, w.started ? (w.zone_seconds[z] ?? 0) / 60 : null])),
   }));
   type Row = (typeof rows)[number];
+  const hasFitness = rows.some((r) => r.pace !== null);
+  const noFitness = longOnly ? "No long run yet." : "No run yet.";
+  /** The latest earlier week with a value, for the "than week N" line in the tooltips. */
+  const previous = (r: Row, key: "pace" | "hr" | "perBeat") =>
+    rows.slice(0, rows.indexOf(r)).reverse().find((p) => p[key] !== null);
   const clickWeek = (e: { activePayload?: { payload: Row }[] } | null) => {
     const n = e?.activePayload?.[0]?.payload.number;
     if (n) onOpenWeek(n);
@@ -138,6 +147,121 @@ export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
           </BarChart>
         </ChartCard>
       </div>
+
+      <div className="flex flex-wrap items-end justify-between gap-2 pt-2">
+        <div>
+          <h3 className="text-sm font-semibold">Pace and heart rate</h3>
+          <p className="text-xs text-muted">
+            {longOnly
+              ? "Sunday long runs only: the same kind of run each week, so the fairest comparison. They get longer through the block, which pushes heart rate up."
+              : "Every run in the week, including extras. The mix of runs changes from week to week, so read the trend rather than one week."}
+          </p>
+        </div>
+        <div className="flex rounded-lg border border-line p-0.5 text-xs">
+          {([[false, "All runs"], [true, "Long runs"]] as const).map(([v, label]) => (
+            <button
+              key={label}
+              onClick={() => setLongOnly(v)}
+              className={`rounded-md px-2.5 py-1 ${longOnly === v ? "bg-brand-soft font-medium text-brand" : "text-muted"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard
+          empty={hasFitness ? undefined : noFitness}
+          title="Average pace per week (min/km)"
+          subtitle={longOnly ? "The long run's average pace. Faster is higher." : "Total time over total distance. Faster is higher."}
+        >
+          {hasFitness && (
+            <LineChart data={rows} margin={MARGIN} onClick={clickWeek}>
+              <CartesianGrid {...GRID} />
+              <XAxis dataKey="week" {...AXIS} />
+              <YAxis
+                {...AXIS}
+                width={36}
+                reversed
+                tickFormatter={paceMin}
+                {...evenTicks(rows.map((r) => r.pace), 0.25, 0.05)}
+              />
+              <Tooltip content={<WeekTip render={(r: Row) => {
+                const p = previous(r, "pace");
+                const d = r.pace !== null && p ? Math.round((r.pace - p.pace!) * 60) : null;
+                return [
+                  [BRAND, r.pace === null ? (longOnly ? "No long run" : "No runs") : `${paceMin(r.pace)} min/km`, "average pace"],
+                  ...(longOnly && r.longActual !== null ? [[null, km(r.longActual, 1), "long run"] as TipRow] : []),
+                  ...(d !== null ? [[null, d === 0 ? "Same pace" : `${Math.abs(d)} s/km ${d < 0 ? "faster" : "slower"}`, `than week ${p!.number}`] as TipRow] : []),
+                ];
+              }} />} />
+              {nowLine}
+              <Line dataKey="pace" stroke={BRAND} strokeWidth={2} connectNulls dot={<LineDot />} activeDot={<LineDot active />} isAnimationActive={false} />
+            </LineChart>
+          )}
+        </ChartCard>
+
+        <ChartCard
+          empty={hasFitness ? undefined : noFitness}
+          title="Average heart rate per week (bpm)"
+          subtitle={longOnly ? "The long run's average heart rate." : "Every run with heart rate, weighted by its time."}
+        >
+          {hasFitness && (
+            <LineChart data={rows} margin={MARGIN} onClick={clickWeek}>
+              <CartesianGrid {...GRID} />
+              <XAxis dataKey="week" {...AXIS} />
+              <YAxis
+                {...AXIS}
+                width={36}
+                allowDecimals={false}
+                {...evenTicks(rows.map((r) => r.hr), 5, 1)}
+              />
+              <Tooltip content={<WeekTip render={(r: Row) => {
+                const p = previous(r, "hr");
+                const d = r.hr !== null && p ? Math.round(r.hr) - Math.round(p.hr!) : null;
+                return [
+                  [HR, r.hr === null ? "No heart rate" : `${Math.round(r.hr)} bpm`, "average HR"],
+                  ...(d !== null ? [[null, d === 0 ? "Same" : `${Math.abs(d)} bpm ${d < 0 ? "lower" : "higher"}`, `than week ${p!.number}`] as TipRow] : []),
+                ];
+              }} />} />
+              {nowLine}
+              <Line dataKey="hr" stroke={HR} strokeWidth={2} connectNulls dot={<LineDot />} activeDot={<LineDot active />} isAnimationActive={false} />
+            </LineChart>
+          )}
+        </ChartCard>
+      </div>
+
+      <ChartCard
+        empty={hasFitness ? undefined : noFitness}
+        title="Metres per heartbeat"
+        subtitle="Pace and heart rate together: the distance you covered for each heartbeat. Going up means you ran faster for the same effort. Hills, heat and longer runs also move it."
+      >
+        {hasFitness && (
+          <LineChart data={rows} margin={MARGIN} onClick={clickWeek}>
+            <CartesianGrid {...GRID} />
+            <XAxis dataKey="week" {...AXIS} />
+            <YAxis
+              {...AXIS}
+              width={36}
+              tickFormatter={(v: number) => v.toFixed(2)}
+              {...evenTicks(rows.map((r) => r.perBeat), 0.05, 0.01)}
+            />
+            <Tooltip content={<WeekTip render={(r: Row) => {
+              const p = previous(r, "perBeat");
+              const d = r.perBeat !== null && p ? r.perBeat - p.perBeat! : null;
+              return [
+                [BRAND, r.perBeat === null ? "No heart rate" : `${r.perBeat.toFixed(2)} m`, "per heartbeat"],
+                ...(r.pace !== null ? [[null, `${paceMin(r.pace)} min/km`, "average pace"] as TipRow] : []),
+                ...(r.hr !== null ? [[null, `${Math.round(r.hr)} bpm`, "average HR"] as TipRow] : []),
+                ...(d !== null ? [[null, `${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(2)} m`, `than week ${p!.number}`] as TipRow] : []),
+              ];
+            }} />} />
+            {nowLine}
+            <Line dataKey="perBeat" stroke={BRAND} strokeWidth={2} connectNulls dot={<LineDot />} activeDot={<LineDot active />} isAnimationActive={false} />
+          </LineChart>
+        )}
+      </ChartCard>
 
       <ChartCard
         empty={hasZoneData ? undefined : "Set your zones in Settings and recalculate to see this chart."}
@@ -250,6 +374,42 @@ export function Block({ onOpenWeek }: { onOpenWeek: (n: number) => void }) {
 
 // ---------------------------------------------------------------------- pieces
 
+/** Heart rate wears the same red as on the run screen. */
+const HR = "var(--color-bad)";
+
+/** A week's average pace, heart rate and metres per heartbeat, with the same math as
+ * the coach's get_block_trends: pace is total time over total distance, heart rate is
+ * weighted by each run's time. Runs without distance or time are left out. */
+function weekFitness(runs: BlockRun[]) {
+  let dist = 0, secs = 0, hrDist = 0, hrSecs = 0, beats = 0;
+  for (const r of runs) {
+    if (!r.distance_km || !r.timer_time_s) continue;
+    dist += r.distance_km;
+    secs += r.timer_time_s;
+    if (r.avg_hr) {
+      hrDist += r.distance_km;
+      hrSecs += r.timer_time_s;
+      beats += (r.avg_hr * r.timer_time_s) / 60;
+    }
+  }
+  return {
+    pace: dist ? secs / 60 / dist : null,
+    hr: hrSecs ? (beats * 60) / hrSecs : null,
+    perBeat: beats ? (hrDist * 1000) / beats : null,
+  };
+}
+
+/** A y-axis range with a tick every `step` around the values, so pace reads 6:30, 6:45,
+ * 7:00 rather than the uneven steps Recharts picks between padded ends. */
+function evenTicks(values: (number | null)[], step: number, pad: number) {
+  const vs = values.filter((v): v is number => v !== null);
+  if (!vs.length) return {};
+  const lo = Math.floor((Math.min(...vs) - pad) / step);
+  const hi = Math.ceil((Math.max(...vs) + pad) / step);
+  const ticks = Array.from({ length: hi - lo + 1 }, (_, i) => Number(((lo + i) * step).toFixed(4)));
+  return { domain: [ticks[0], ticks[ticks.length - 1]], ticks, interval: 0 as const };
+}
+
 /** Reason tags plus the start of the note; the full note is in the tooltip and the Week screen. */
 function JournalSummary({ journal }: { journal: WeekJournal }) {
   if (!journal.note && journal.reasons.length === 0) return <span className="text-muted">—</span>;
@@ -312,4 +472,10 @@ function RunTip({ active, payload }: { active?: boolean; payload?: { payload: Bl
 
 function Dot(props: { cx?: number; cy?: number; fill?: string }) {
   return <circle cx={props.cx} cy={props.cy} r={5} fill={props.fill} stroke="var(--color-panel)" strokeWidth={2} />;
+}
+
+/** Line dots take the line's color; weeks without a value draw nothing. */
+function LineDot(props: { cx?: number; cy?: number | null; stroke?: string; active?: boolean }) {
+  if (props.cx === undefined || props.cy === undefined || props.cy === null) return null;
+  return <circle cx={props.cx} cy={props.cy} r={props.active ? 6 : 5} fill={props.stroke} stroke="var(--color-panel)" strokeWidth={2} />;
 }
