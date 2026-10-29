@@ -109,6 +109,10 @@ Upload screen still works).
 - Files modified in the last 3 seconds are left for the next look, so half-downloaded files are
   not read.
 
+To fill the folder automatically, `garmin_sync/` downloads new runs from Garmin Connect twice a
+day. It is separate from the app and keeps your Garmin sign-in in the macOS Keychain. See
+[garmin_sync/README.md](garmin_sync/README.md).
+
 ### Backup and restore
 
 ```bash
@@ -291,7 +295,8 @@ it only if you want to explore the app, and delete it afterwards.
   assignment → comparison flow in the browser. **Still to be verified with a real .FIT from a
   Garmin watch and with a real Garmin export ZIP**; real files carry many more messages and
   some unhandled field may show up.
-- No connection to Garmin/Strava, no automatic sync, no accounts and no deployment.
+- The app itself has no connection to Garmin/Strava, no accounts and no deployment. The optional
+  `garmin_sync/` script relies on an unofficial Garmin library that can break without warning.
 - The app itself makes no predictions, training advice or medical recommendations. Claude can
   discuss your training through the MCP server and change the plan only with your yes, within
   the rules above.
